@@ -60,12 +60,18 @@ def test_rescan_previously_visited_target(monkeypatch):
     assert bundle['accepted'].empty
 
 
-def test_unresolvable_overlap_stops_with_explicit_residuals():
+def test_overlapping_faces_are_merged_before_small_area_cleanup():
+    # 50 ㎡ face overlaps 160 ㎡: trimming would leave 40 ㎡, so it is absorbed
+    # whole and the layer ends clean instead of dead-ending on the overlap.
     _,bundle=run([box(0,0,5,10),box(4,0,20,10)])
-    assert bundle['verification']['small_area_rounds']==1
-    assert not bundle['verification']['passed']
-    assert bundle['verification']['remaining_small_area']==1
-    assert bundle['verification']['remaining'][0]['reason']
+    assert bundle['verification']['passed']
+    assert bundle['verification']['remaining_overlap']==0
+    assert bundle['verification']['remaining_small_area']==0
+    assert len(bundle['accepted'])==1
+    assert bundle['accepted'].area.iloc[0]==200
+    event=next(r for r in bundle['records'] if r['issue_type']=='OVERLAP')
+    assert event['action']=='merge_overlap' and event['status']=='auto_accepted'
+    assert event['target_feature_id']=='1'
 
 
 def test_exact_threshold_is_retained_and_split_ids_do_not_collide():

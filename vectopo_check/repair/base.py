@@ -24,6 +24,8 @@ class RepairContext:
     def __init__(self, gdf, ids):
         attributes = gdf.drop(columns=gdf.geometry.name).to_dict("records") or [{} for _ in range(len(gdf))]
         self.records = {str(fid): (geom, attrs) for fid, geom, attrs in zip(ids, gdf.geometry, attributes)}
+        # Stable layer position, used to break ties deterministically (equal areas).
+        self.order = {fid: position for position, fid in enumerate(self.records)}
         self.index_ids = [fid for fid, (g, _) in self.records.items() if safe_geometry(g) is not None]
         self.invalid_ids = {fid for fid in self.index_ids if not self.records[fid][0].is_valid}
         self.tree = STRtree([self.records[fid][0] for fid in self.index_ids])

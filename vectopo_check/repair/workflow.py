@@ -4,11 +4,16 @@ from pathlib import Path
 
 import geopandas as gpd
 
-from . import holes, touch_island, small_area
+from . import holes, touch_island, small_area, overlap
 from .base import RepairContext, reject, geometry_diff
 from ..checks.base import json_finite, is_geographic, polygons
 from ..config import Config
 from ..io import write_gpkg_layer
+
+# Overlap repair is order dependent: one accepted clip can unblock a pair that
+# failed earlier in the same pass, so retry a bounded number of times.
+MAX_OVERLAP_ROUNDS = 3
+RESIDUAL_LIMIT = 2000
 
 
 def audit(gdf, cfg):
@@ -81,18 +86,27 @@ def repair_layer(gdf, cfg=None, progress=None):
         working, stage_original, split_into, part_sources, records, proposals = split_layer(original)
     context = RepairContext(working, working.index)
     # Whole-layer phases, so accepted edits are visible to subsequent neighbors.
-    phases = [("INVALID_HOLE", holes), ("TOUCH_ISLAND", touch_island), ("SMALL_AREA", small_area)]
+    phases = [("INVALID_HOLE", holes), ("TOUCH_ISLAND", touch_island),
+              ("OVERLAP", overlap), ("SMALL_AREA", small_area)]
     small_rounds = 0
+    overlap_rounds = 0
     for issue_type, module in phases:
         accepted_this_round = 0
         if issue_type == "SMALL_AREA":
             small_rounds += 1
             ids = list(working.index[working.geometry.area < cfg.tolerance.min_area])
+        elif issue_type == "OVERLAP":
+            overlap_rounds += 1
+            # Settle the largest claim first so each smaller claim absorbs its
+            # whole share in one edit instead of being clipped repeatedly.
+            ids = overlap.priority_order(working)
         else:
             ids = list(working.index)
         for position, fid in enumerate(ids):
             if progress and position % 100 == 0:
-                progress(f"正在处理 {issue_type}：{position} / {len(ids)}，已记录 {len(records)} 笔处理" + (f"，第 {small_rounds} 轮" if issue_type == "SMALL_AREA" else ""))
+                progress(f"正在处理 {issue_type}：{position} / {len(ids)}，已记录 {len(records)} 笔处理"
+                         + (f"，第 {small_rounds} 轮" if issue_type == "SMALL_AREA" else "")
+                         + (f"，第 {overlap_rounds} 轮" if issue_type == "OVERLAP" else ""))
             if fid not in working.index or fid in blocked:
                 continue
             geom = working.loc[fid, geometry_name]
@@ -188,6 +202,15 @@ def repair_layer(gdf, cfg=None, progress=None):
         # additional productive pass strictly decreases the finite feature count.
         if cfg.simple_mode and issue_type == "SMALL_AREA" and accepted_this_round and (working.geometry.area < cfg.tolerance.min_area).any():
             phases.append(("SMALL_AREA", small_area))
+        # A clip accepted in this pass can unblock a pair whose candidate failed
+        # earlier (the third party had not yielded yet); retry, bounded so a
+        # genuinely impossible pair cannot loop.
+        if (cfg.simple_mode and issue_type == "OVERLAP" and accepted_this_round
+                and overlap_rounds < MAX_OVERLAP_ROUNDS
+                and any(r["issue_type"] == "OVERLAP" and r["status"] != "auto_accepted"
+                        and r["feature_id"] not in blocked for r in records)):
+            phases.append(("OVERLAP", overlap))
+            phases.append(("SMALL_AREA", small_area))
     remaining = []
     last = {r["feature_id"]: r for r in records}
     for fid, geom in working.geometry.items():
@@ -199,12 +222,38 @@ def repair_layer(gdf, cfg=None, progress=None):
         if kinds:
             remaining.append({"feature_id":fid, "source_id":part_sources.get(fid,fid), "issues":kinds,
                               "area_m2":geom.area, "reason":last.get(fid,{}).get("reason", "几何非法或关联候选待审核，无法安全自动处理")})
+    # Overlap is a *relation*, not a property of one row: only a fresh scan of the
+    # processed layer can prove the output is clean, so "passed" stays honest.
+    residual, truncated = ([], False)
+    if any(r["issue_type"] == "OVERLAP" for r in records) or blocked:
+        residual, truncated = overlap.find_overlaps(working, cfg, limit=RESIDUAL_LIMIT)
+    by_feature = {}
+    for first, second, area in residual:
+        # Attribute a residual pair to the side that actually tried and failed.
+        owner = next((fid for fid in (first, second)
+                      if last.get(fid, {}).get("issue_type") == "OVERLAP"), first)
+        by_feature.setdefault(owner, []).append(
+            {"related_feature_id": second if owner == first else first, "overlap_area": area})
+    known = {item["feature_id"]: item for item in remaining}
+    for fid, pairs in by_feature.items():
+        item = known.get(fid)
+        if item is None:
+            geom = working.loc[fid, geometry_name]
+            item = {"feature_id":fid, "source_id":part_sources.get(fid,fid), "issues":[],
+                    "area_m2":float(geom.area) if geom is not None else None, "reason":""}
+            remaining.append(item)
+            known[fid] = item
+        item["issues"].append("OVERLAP")
+        item["overlap_pairs"] = pairs
+        reason = last.get(fid, {}).get("reason") if last.get(fid, {}).get("issue_type") == "OVERLAP" else None
+        item["reason"] = reason or item.get("reason") or "重叠面未自动处理，需人工核对面积归属"
     return {"original": original, "stage_original":stage_original, "accepted": working, "records": records, "proposals": proposals,
             "merged_into": merged_into, "split_into":split_into, "part_sources":part_sources,
-            "verification":{"passed":not remaining, "small_area_rounds":small_rounds,
+            "verification":{"passed":not remaining, "small_area_rounds":small_rounds, "overlap_rounds":overlap_rounds,
                             "remaining_small_area":sum("SMALL_AREA" in r["issues"] for r in remaining),
                             "remaining_multipart":sum("MULTIPART" in r["issues"] for r in remaining),
-                            "remaining":remaining}}
+                            "remaining_overlap":len(by_feature), "overlap_pairs":len(residual),
+                            "overlap_truncated":truncated, "remaining":remaining}}
 
 
 def write_repair_outputs(bundle, output_dir):
@@ -221,7 +270,7 @@ def write_repair_outputs(bundle, output_dir):
                          "合并源行保留为 NULL 几何并标记 merged_into；目标行持有合并面",
                          "孤立小图斑删除行在 staging 标记 deleted，保留原始几何和属性；processed 不包含已删除行",
                          "拆分父行在 staging 标记 split，子行 source_id 指向原始父行；源属性继承至各子部件",
-                         "verification 为处理后多部件/小面积复核；无进展时停止并列出未解决图斑，不冒充全部合格"]}
+                         "verification 为处理后多部件/小面积/重叠面复核；无进展时停止并列出未解决图斑，不冒充全部合格"]}
     accepted_export = accepted.copy()
     id_fields = {}
     for base, values in [("topo_id",list(accepted.index)), ("topo_src",[bundle.get("part_sources",{}).get(fid,fid) for fid in accepted.index])]:
