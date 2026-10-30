@@ -35,6 +35,16 @@ python -m vectopo_check.cli web --port 8766 --no-open
 
 网页服务仅绑定 `127.0.0.1`，用 Python 标准库提供 HTTP，不引入 Web 框架。文件只传给本机进程，在临时目录检查，不修改原文件。停止服务（终端 Ctrl+C）会等待当前任务结束并清理临时文件；请在停止前下载需要保留的报告。上传文件总量限 180 MB（HTTP 编码请求上限 256 MB）；服务一次执行一个检查任务。空间预览最多抽样显示 2,000 个图斑，网页明细及筛选仅覆盖前 2,000 条问题；统计、报告及矢量导出仍基于全部检查结果，不因预览限额减少检查。关闭网页不会取消已开始的检查；页面刷新后需重新上传。
 
+## 免安装 EXE（分享用）
+
+`dist\地类图斑拓扑检查与修复工具_v0.1.0.exe` 是打包好的单文件程序，接收方**无需安装 Python**、无需联网、无需管理员权限。双击后大约 3–6 秒解包，弹出一个小窗口并自动打开浏览器；窗口里显示服务地址，可“打开检查界面 / 复制地址 / 打开成果目录 / 退出”。
+
+* 界面、检查与修复逻辑、报告导出与 `vectopo-check web` 完全一致，仍是本机 `127.0.0.1` 服务；关闭窗口会停止服务并清理临时文件，需要保留的成果请先下载。
+* 默认端口 8765，被占用时自动改用空闲端口，以窗口里显示的地址为准。
+* 未做代码签名，SmartScreen 可能提示“Windows 已保护你的电脑”，点“更多信息 → 仍要运行”。个别杀软会把 PyInstaller 引导器误报，可对程序所在目录与 `%LOCALAPPDATA%\vectopo-check\` 加白。
+* 排错日志在 `%LOCALAPPDATA%\vectopo-check\launcher.log`。命令行参数：`--serve --no-browser --port 8765`、`--selftest 报告.json`（打包自检，覆盖 GPKG 读写、坐标转换、重叠面修复、网页资源与本地服务）。
+* 自行重新打包：`.\.venv\Scripts\python.exe -m pip install -e ".[build]"`，再执行 `powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build_exe.ps1 -SelfTest`，细节见 [packaging/README.md](packaging/README.md)。
+
 ## 安装与使用
 
 ```powershell

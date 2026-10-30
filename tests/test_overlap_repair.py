@@ -83,6 +83,20 @@ def test_three_face_chain_resolves_in_one_run():
     assert sorted(bundle["accepted"].area) == [150.0, 250.0]
 
 
+def test_equal_area_chain_keeps_the_priority_fixed_while_clipping():
+    # Regression: the first clip shrinks C2 from 200 m² to 100 m². If the ranking
+    # were recomputed from live areas, C3 (200 m²) would then outrank C2 and the
+    # C2/C3 overlap would never be yielded, leaving a residual pair behind.
+    _, cfg, bundle = run([box(600, 0, 620, 10), box(610, 0, 630, 10), box(620, 0, 640, 10)])
+    assert bundle["verification"]["passed"]
+    assert bundle["verification"]["overlap_pairs"] == 0
+    assert overlaps(bundle, cfg) == []
+    assert bundle["accepted"].area.tolist() == [200.0, 100.0, 100.0]
+    clipped = [r for r in bundle["records"] if r["action"] == "clip_overlap"]
+    assert sorted(r["feature_id"] for r in clipped) == ["1", "2"]
+    assert all(r["status"] == "auto_accepted" for r in clipped)
+
+
 def test_impossible_overlap_is_reported_not_declared_clean():
     # Plugging the notch of the U shape would enclose a void, so absorbing the
     # small claim is impossible and trimming leaves a sub-threshold parcel:

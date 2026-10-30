@@ -11,9 +11,11 @@ dependencies = ["shapely>=2.0", "geopandas>=0.14", "pyogrio", "typer>=0.12", "py
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+build = ["pyinstaller>=6.6"]
 
 [project.scripts]
 vectopo-check = "vectopo_check.cli:app"
+vectopo-gui = "vectopo_check.launcher:main"
 
 [tool.setuptools.packages.find]
 include = ["vectopo_check*"]

@@ -27,6 +27,22 @@ def _priority(order, fid, area):
     return (float(area), -order.get(str(fid), 0))
 
 
+def _yields_to(context, fid, area, other_id, other_area):
+    """Whether the other parcel holds the stronger claim on the shared area.
+
+    While a layer is being processed the workflow pins one rank per feature so a
+    parcel clipped halfway through the pass keeps outranking the neighbours it has
+    not met yet; otherwise the shrink would silently reorder the queue and leave
+    chains touching (C2 clipped to 100 m² would let the 200 m² C3 keep its overlap
+    with it).
+    """
+    ranks = getattr(context, "priority", None) or {}
+    mine, theirs = ranks.get(str(fid)), ranks.get(str(other_id))
+    if mine is not None and theirs is not None:
+        return mine > theirs
+    return _priority(context.order, fid, area) < _priority(context.order, other_id, other_area)
+
+
 def repair(feature_id, geom, attrs, cfg):
     action = CLIP
     if safe_geometry(geom) is None or not geom.is_valid or geom.geom_type != "Polygon":
@@ -34,13 +50,12 @@ def repair(feature_id, geom, attrs, cfg):
     context = cfg._repair_context
     if context is None:
         return reject(feature_id, geom, "缺少邻接图层上下文 RepairContext", action)
-    mine = _priority(context.order, feature_id, geom.area)
     losses = []
     for fid, other, other_attrs in context.neighbors(geom, str(feature_id), include_blocked=True):
         if other.geom_type != "Polygon" or not other.is_valid:
             continue
         # Equal-area duplicates fall back to layer order: the later row yields.
-        if _priority(context.order, fid, other.area) <= mine:
+        if not _yields_to(context, feature_id, geom.area, fid, other.area):
             continue
         shared = geom.intersection(other)
         area = 0.0 if shared is None or shared.is_empty else float(shared.area)

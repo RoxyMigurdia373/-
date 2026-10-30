@@ -100,6 +100,10 @@ def repair_layer(gdf, cfg=None, progress=None):
             # Settle the largest claim first so each smaller claim absorbs its
             # whole share in one edit instead of being clipped repeatedly.
             ids = overlap.priority_order(working)
+            # Pin the ranking for the whole pass: a parcel clipped down to a few
+            # square metres must keep its claim over the neighbours it has not
+            # met yet, or the queue silently reorders and chains stay overlapping.
+            context.priority = {str(fid): rank for rank, fid in enumerate(ids)}
         else:
             ids = list(working.index)
         for position, fid in enumerate(ids):

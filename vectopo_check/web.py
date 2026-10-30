@@ -289,10 +289,26 @@ def make_handler(workspace):
     return Handler
 
 
+class WebServer(ThreadingHTTPServer):
+    """Local HTTP server that refuses to share its port.
+
+    Windows lets a second socket bind an address already in use when
+    ``SO_REUSEADDR`` is set (``HTTPServer`` turns it on by default), which would
+    silently start a competing workbench and swallow requests. Turning reuse off
+    makes a busy port fail loudly so callers can pick another one.
+    """
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+
 def serve(port=8765, open_browser=True):
     workspace = Workspace()
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(workspace))
+        try:
+            server = WebServer(("127.0.0.1", port), make_handler(workspace))
+        except OSError as exc:
+            raise SystemExit(f"端口 {port} 已被占用或不可用：{exc}\n用 --port 指定其他端口后重试。")
         url = f"http://127.0.0.1:{server.server_port}"
         print(f"vectopo-check 网页版：{url}\n按 Ctrl+C 停止。", flush=True)
         if open_browser:
