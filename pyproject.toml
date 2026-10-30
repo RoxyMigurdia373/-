@@ -19,7 +19,7 @@ vectopo-check = "vectopo_check.cli:app"
 include = ["vectopo_check*"]
 
 [tool.setuptools.package-data]
-vectopo_check = ["static/*.html"]
+vectopo_check = ["static/*.html", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

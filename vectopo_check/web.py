@@ -26,6 +26,7 @@ from .io import read_layer
 from .report import write_reports
 from .export import write_vector_export, write_report_bundle, write_shp_zip
 from .preset import prepare_parcels
+from .progress import progress_percent
 
 MAX_BODY = 256 * 1024 * 1024
 PREVIEW_LIMIT = 2000
@@ -136,7 +137,7 @@ class Workspace:
             if any(j["status"] in {"queued", "running"} for j in self.jobs.values()):
                 raise ValueError("已有检查正在运行，请等待完成")
             job = uuid.uuid4().hex
-            self.jobs[job] = {"status": "queued"}
+            self.jobs[job] = {"status": "queued", "progress": 0}
             self.request_jobs[key] = job
         self.pool.submit(self._run, job, path, request.get("layer") or None, cfg, repair)
         return {"job": job}
@@ -144,7 +145,8 @@ class Workspace:
     def _run(self, job, path, layer, cfg, repair=False):
         def progress(message):
             with self.lock:
-                self.jobs[job] = {"status": "running", "message": message}
+                previous = self.jobs.get(job, {}).get("progress", 0)
+                self.jobs[job] = {"status": "running", "message": message, "progress": max(previous, progress_percent(message))}
         with self.lock:
             self.jobs[job] = {"status": "running"}
         try:
@@ -178,7 +180,7 @@ class Workspace:
                         for g in gdf.geometry.iloc[::stride] if safe_geometry(g) is not None]
             browser_report = report.model_dump(mode="json", exclude={"issues"})
             browser_report["issues"] = [i.model_dump(mode="json") for i in report.issues[:PREVIEW_LIMIT]]
-            result = {"status": "done", "report": browser_report,
+            result = {"status": "done", "progress": 100, "report": browser_report,
                       "severity_counts": dict(Counter(i.severity for i in report.issues)),
                       "preview_limited": len(gdf) > PREVIEW_LIMIT or len(report.issues) > PREVIEW_LIMIT,
                       "preview_limit": PREVIEW_LIMIT,
