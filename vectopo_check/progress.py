@@ -5,6 +5,8 @@ import re
 def progress_percent(message):
     match = re.search(r"(\d+) / (\d+)", message)
     ratio = min(1, int(match[1]) / max(1, int(match[2]))) if match else 0
+    if "拆分多部件" in message:
+        return 64
     if "processed / staging" in message:
         return 97
     for phase, start in [("INVALID_HOLE", 65), ("TOUCH_ISLAND", 75), ("SMALL_AREA", 85)]:

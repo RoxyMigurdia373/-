@@ -172,11 +172,13 @@ class Workspace:
                 fields = write_vector_export(gdf, report, cfg, out)
             except Exception as exc:
                 export_error = str(exc)
-            repair_summary, repair_error = None, None
+            repair_summary, repair_error, repair_verification = None, None, None
             if repair:
                 try:
                     progress("正在切开岛洞并合并小于0.1亩图斑，逐项复核邻接关系…" if cfg.simple_mode else "正在生成修复候选并逐事务全图层复检，耗时可能较长…")
-                    repair_summary = run_repair(gdf, cfg, out, path, progress=progress)["summary"]
+                    repair_payload = run_repair(gdf, cfg, out, path, progress=progress)
+                    repair_summary = repair_payload["summary"]
+                    repair_verification = {key:value for key,value in repair_payload.get("verification", {}).items() if key != "remaining"}
                 except Exception as exc:
                     repair_error = str(exc)
             stride = max(1, (len(gdf) + PREVIEW_LIMIT - 1) // PREVIEW_LIMIT)
@@ -190,7 +192,7 @@ class Workspace:
                       "preview_limit": PREVIEW_LIMIT,
                       "vector_fields": fields, "vector_export_error": export_error,
                       "repair_enabled": repair, "repair_summary": repair_summary, "repair_error": repair_error,
-                      "preset": preset,
+                      "preset": preset, "repair_verification":repair_verification,
                       "coverage": {"type": "FeatureCollection", "features": features}}
         except Exception as exc:
             result = {"status": "error", "error": str(exc)}

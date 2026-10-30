@@ -73,12 +73,26 @@ def repair_layer(gdf, cfg=None, progress=None):
     blocked = set()
     merged_into = {}
     geometry_name = working.geometry.name
+    stage_original, split_into, part_sources = original, {}, {}
+    if cfg.simple_mode:
+        from .multipart import split_layer
+        if progress:
+            progress("正在拆分多部件，保留各部件原始属性…")
+        working, stage_original, split_into, part_sources, records, proposals = split_layer(original)
     context = RepairContext(working, working.index)
     # Whole-layer phases, so accepted edits are visible to subsequent neighbors.
-    for issue_type, module in [("INVALID_HOLE", holes), ("TOUCH_ISLAND", touch_island), ("SMALL_AREA", small_area)]:
+    phases = [("INVALID_HOLE", holes), ("TOUCH_ISLAND", touch_island), ("SMALL_AREA", small_area)]
+    small_rounds = 0
+    for issue_type, module in phases:
+        accepted_this_round = 0
+        if issue_type == "SMALL_AREA":
+            small_rounds += 1
+            ids = list(working.index[working.geometry.area < cfg.tolerance.min_area])
+        else:
+            ids = list(working.index)
         for position, fid in enumerate(ids):
             if progress and position % 100 == 0:
-                progress(f"正在处理 {issue_type}：{position} / {len(ids)}，已记录 {len(records)} 笔处理")
+                progress(f"正在处理 {issue_type}：{position} / {len(ids)}，已记录 {len(records)} 笔处理" + (f"，第 {small_rounds} 轮" if issue_type == "SMALL_AREA" else ""))
             if fid not in working.index or fid in blocked:
                 continue
             geom = working.loc[fid, geometry_name]
@@ -100,7 +114,16 @@ def repair_layer(gdf, cfg=None, progress=None):
             candidate_geom = proposal.repaired_geom
             target = proposal.target_feature_id
             before_geom = working.loc[target, geometry_name] if target else geom
-            candidate = working.copy()
+            if cfg.simple_mode:
+                envelope = (geom.envelope.union(candidate_geom.envelope) if candidate_geom is not None else geom.envelope).envelope.buffer(cfg.tolerance.distance)
+                affected = context.nearby(envelope) | {fid}
+                if target:
+                    affected.add(target)
+                before_frame = working.loc[sorted(affected)]
+                candidate = before_frame.copy()
+            else:
+                before_frame = working
+                candidate = working.copy()
             validation = {}
             if proposal.status != "rejected":
                 if target:
@@ -110,19 +133,7 @@ def repair_layer(gdf, cfg=None, progress=None):
                     candidate = candidate.drop(index=fid)
                 else:
                     candidate.loc[fid, geometry_name] = candidate_geom
-                if cfg.simple_mode:
-                    # These five rules are feature-local or pair-local. Recheck
-                    # changed faces and all neighboring envelopes, including
-                    # blocked/pending neighbors, without global GAP/union work.
-                    envelope = (geom.envelope.union(candidate_geom.envelope) if candidate_geom is not None else geom.envelope).envelope.buffer(cfg.tolerance.distance)
-                    nearby = working.sindex.query(envelope)
-                    affected = set(working.index[nearby]) | {fid}
-                    if target:
-                        affected.add(target)
-                    before_frame = working.loc[working.index.isin(affected)]
-                    after_frame = candidate.loc[candidate.index.isin(affected)]
-                else:
-                    before_frame, after_frame = working, candidate
+                after_frame = candidate
                 baseline, before_error = audit(before_frame, cfg)
                 checked, after_error = audit(after_frame, cfg)
                 if before_error or after_error:
@@ -149,7 +160,17 @@ def repair_layer(gdf, cfg=None, progress=None):
                               "geom_original": before_geom.wkt if before_geom is not None else None,
                               "source_original": geom.wkt, "geom_repaired": candidate_geom})
             if proposal.status == "auto_accepted":
-                working = candidate
+                accepted_this_round += 1
+                if cfg.simple_mode:
+                    if target:
+                        working.loc[target, geometry_name] = candidate_geom
+                        working.drop(index=fid, inplace=True)
+                    elif candidate_geom is None:
+                        working.drop(index=fid, inplace=True)
+                    else:
+                        working.loc[fid, geometry_name] = candidate_geom
+                else:
+                    working = candidate
                 updated_id = target or fid
                 if candidate_geom is None:
                     context.remove(fid)
@@ -163,8 +184,27 @@ def repair_layer(gdf, cfg=None, progress=None):
                 blocked.add(fid)
                 if target:
                     blocked.add(target)
-    return {"original": original, "accepted": working, "records": records, "proposals": proposals,
-            "merged_into": merged_into}
+        # Every accepted small-area operation removes one feature. Thus each
+        # additional productive pass strictly decreases the finite feature count.
+        if cfg.simple_mode and issue_type == "SMALL_AREA" and accepted_this_round and (working.geometry.area < cfg.tolerance.min_area).any():
+            phases.append(("SMALL_AREA", small_area))
+    remaining = []
+    last = {r["feature_id"]: r for r in records}
+    for fid, geom in working.geometry.items():
+        kinds = []
+        if geom is not None and geom.geom_type in {"MultiPolygon", "GeometryCollection"}:
+            kinds.append("MULTIPART")
+        if geom is not None and geom.area < cfg.tolerance.min_area:
+            kinds.append("SMALL_AREA")
+        if kinds:
+            remaining.append({"feature_id":fid, "source_id":part_sources.get(fid,fid), "issues":kinds,
+                              "area_m2":geom.area, "reason":last.get(fid,{}).get("reason", "几何非法或关联候选待审核，无法安全自动处理")})
+    return {"original": original, "stage_original":stage_original, "accepted": working, "records": records, "proposals": proposals,
+            "merged_into": merged_into, "split_into":split_into, "part_sources":part_sources,
+            "verification":{"passed":not remaining, "small_area_rounds":small_rounds,
+                            "remaining_small_area":sum("SMALL_AREA" in r["issues"] for r in remaining),
+                            "remaining_multipart":sum("MULTIPART" in r["issues"] for r in remaining),
+                            "remaining":remaining}}
 
 
 def write_repair_outputs(bundle, output_dir):
@@ -174,15 +214,29 @@ def write_repair_outputs(bundle, output_dir):
     original, accepted = bundle["original"], bundle["accepted"]
     payload = {"tool": "vectopo-check", "crs": str(original.crs) if original.crs else "unknown",
                "summary": dict(Counter(r["status"] for r in records)), "repairs": records,
+               "verification":bundle.get("verification"), "split_into":bundle.get("split_into", {}),
                "geometry_storage": {"geom_original": "WKT text", "geom_repaired": "native GPKG geometry"},
                "notes": ["staging 图层只包含自动接受的变化；pending_review/rejected 不应用",
                          "candidates 图层保存候选几何供审核，不是已批准成果",
                          "合并源行保留为 NULL 几何并标记 merged_into；目标行持有合并面",
-                         "孤立小图斑删除行在 staging 标记 deleted，保留原始几何和属性；processed 不包含已删除行"]}
+                         "孤立小图斑删除行在 staging 标记 deleted，保留原始几何和属性；processed 不包含已删除行",
+                         "拆分父行在 staging 标记 split，子行 source_id 指向原始父行；源属性继承至各子部件",
+                         "verification 为处理后多部件/小面积复核；无进展时停止并列出未解决图斑，不冒充全部合格"]}
+    accepted_export = accepted.copy()
+    id_fields = {}
+    for base, values in [("topo_id",list(accepted.index)), ("topo_src",[bundle.get("part_sources",{}).get(fid,fid) for fid in accepted.index])]:
+        name = base
+        while name in accepted_export.columns:
+            name += "_source"
+        accepted_export[name] = values
+        id_fields[base] = name
+    payload["processed_id_fields"] = id_fields
+    payload = json_finite(payload)
     (out / "repair_report.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    stage = original.copy()
+    stage_source = bundle.get("stage_original", original)
+    stage = stage_source.copy()
     # Rename reserved export columns, preserving source attributes.
-    reserved = {"geom_original", "geom_repaired", "repair_id", "repair_status", "merged_into"}
+    reserved = {"geom_original", "geom_repaired", "repair_id", "repair_status", "merged_into", "source_id"}
     used = set(stage.columns) | reserved
     rename = {}
     for col in stage.columns:
@@ -196,17 +250,22 @@ def write_repair_outputs(bundle, output_dir):
     old_geometry = stage.geometry.name
     if old_geometry != "geom_repaired":
         stage = stage.rename_geometry("geom_repaired")
-    stage["geom_original"] = [g.wkt if g is not None else None for g in original.geometry]
-    stage["repair_id"] = list(original.index)
-    stage["merged_into"] = [bundle["merged_into"].get(fid) for fid in original.index]
-    stage["repair_status"] = [("merged" if fid in bundle["merged_into"] else "deleted") if fid not in accepted.index else "auto_accepted" if any(r["status"] == "auto_accepted" and fid in {r["feature_id"], r["target_feature_id"]} for r in records) else "unchanged" for fid in original.index]
-    stage["geom_repaired"] = [accepted.loc[fid, accepted.geometry.name] if fid in accepted.index else None for fid in original.index]
+    stage["geom_original"] = [g.wkt if g is not None else None for g in stage_source.geometry]
+    stage["repair_id"] = list(stage_source.index)
+    stage["merged_into"] = [bundle["merged_into"].get(fid) for fid in stage_source.index]
+    touched = {fid for r in records if r["status"] == "auto_accepted" for fid in (r["feature_id"], r.get("target_feature_id"))}
+    stage["source_id"] = [bundle.get("part_sources", {}).get(fid, fid) for fid in stage_source.index]
+    stage["repair_status"] = ["split" if fid in bundle.get("split_into", {}) else
+                              ("merged" if fid in bundle["merged_into"] else "deleted") if fid not in accepted.index else
+                              "auto_accepted" if fid in touched or fid in bundle.get("part_sources", {}) else "unchanged"
+                              for fid in stage_source.index]
+    stage["geom_repaired"] = [accepted.loc[fid, accepted.geometry.name] if fid in accepted.index else None for fid in stage_source.index]
     path = out / "repair_staging.gpkg"
     # Replacing a dedicated output is allowed, never the source dataset.
     if path.exists():
         path.unlink()
     write_gpkg_layer(stage, path, "staging", geometry_name="geom_repaired")
-    write_gpkg_layer(accepted, path, "processed")
+    write_gpkg_layer(accepted_export, path, "processed")
     if bundle["proposals"]:
         proposals = gpd.GeoDataFrame(bundle["proposals"], geometry="geom_repaired", crs=original.crs)
         write_gpkg_layer(proposals, path, "candidates", geometry_name="geom_repaired")

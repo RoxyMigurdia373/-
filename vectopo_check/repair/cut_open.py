@@ -22,14 +22,26 @@ def repair(feature_id, geom, attrs, cfg):
         cut = shell.difference(unary_union(holes)) if holes else poly
         while cut.geom_type == "Polygon" and len(cut.interiors):
             before = len(cut.interiors)
-            a, b = nearest_points(cut.exterior, cut.interiors[0])
-            # A nonzero-width channel creates a valid open boundary. A zero-width
-            # line alone would leave a self-touching ring, not a valid polygon.
-            connector = a if a.equals(b) else LineString([a, b])
-            channel = connector.buffer(cfg.repair.cut_width / 2)
-            cut = cut.difference(channel)
-            if cut.geom_type != "Polygon" or len(cut.interiors) >= before:
+            ring = cut.interiors[0]
+            nearest = nearest_points(cut.exterior, ring)
+            # A shortest cut can sever a narrow neck. Try alternative points
+            # on the same hole before giving up; never fill it or discard parts.
+            opened = None
+            for index in range(17):
+                if index == 0:
+                    a, b = nearest
+                else:
+                    b = ring.interpolate((index - 1) / 16, normalized=True)
+                    a = nearest_points(cut.exterior, b)[0]
+                connector = a if a.equals(b) else LineString([a, b])
+                channel = connector.buffer(cfg.repair.cut_width / 2)
+                candidate_cut = cut.difference(channel)
+                if candidate_cut.geom_type == "Polygon" and candidate_cut.is_valid and len(candidate_cut.interiors) < before:
+                    opened = candidate_cut
+                    break
+            if opened is None:
                 return reject(feature_id, geom, "切开后产生多部件或洞未减少，已回退", action)
+            cut = opened
         if cut.geom_type != "Polygon" or not cut.is_valid:
             return reject(feature_id, geom, "切开后几何不合法，已回退", action)
         output.append(cut)

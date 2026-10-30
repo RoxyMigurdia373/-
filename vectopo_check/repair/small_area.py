@@ -12,12 +12,13 @@ def repair(feature_id, geom, attrs, cfg):
     if context is None:
         return reject(feature_id, geom, "缺少邻接图层上下文 RepairContext", action)
     targets = []
+    overlap_epsilon = min(cfg.tolerance.distance ** 2, 1e-6) if cfg.simple_mode else 0.0
     has_neighbor = False
     for fid, other, other_attrs in context.neighbors(geom, str(feature_id), include_blocked=True):
         edge = geom.boundary.intersection(other.boundary).length
         overlap = geom.intersection(other).area
-        has_neighbor |= edge > 0 or overlap > 0
-        if fid in context.blocked or other.geom_type != "Polygon" or overlap > 0:
+        has_neighbor |= edge > 0 or overlap > overlap_epsilon
+        if fid in context.blocked or other.geom_type != "Polygon" or overlap > overlap_epsilon:
             continue
         if edge > cfg.tolerance.distance:
             targets.append((fid, other, other_attrs, edge))
@@ -25,7 +26,8 @@ def repair(feature_id, geom, attrs, cfg):
         if cfg.repair.delete_isolated_small_area and not has_neighbor:
             # Invalid geometries are absent from the spatial index: never infer
             # isolation when a nearby invalid feature could be a neighbor.
-            for fid, (other, _) in context.records.items():
+            for fid in context.invalid_ids:
+                other, _ = context.records[fid]
                 if fid != str(feature_id) and other is not None and not other.is_valid and other.envelope.intersects(geom.envelope):
                     return reject(feature_id, geom, "附近存在非法几何，无法确认无共边，保留待核查", action)
             output = result(feature_id, geom, None, "delete_isolated_small_area",
@@ -34,20 +36,39 @@ def repair(feature_id, geom, attrs, cfg):
             output.diff.update(deleted=True, removed_area=geom.area)
             return output
         return reject(feature_id, geom, "无可合并的共边邻接面；共点不算邻接", action)
-    target, other, other_attrs, edge = min(targets, key=lambda t: (-(t[3] if cfg.repair.small_area_strategy == "longest_shared_edge" else t[1].area), t[0]))
-    merged = other.union(geom)
-    validated = validate_candidate(target, other, merged, other_attrs, cfg, action)
-    if validated.status == "rejected":
-        return reject(feature_id, geom, validated.reason, action)
-    field = cfg.repair.class_field
-    same_class = bool(field and attrs.get(field) is not None and attrs.get(field) == other_attrs.get(field))
-    status = "auto_accepted" if (same_class or cfg.repair.merge_without_class) and not cfg.is_geographic else "pending_review"
-    output = result(feature_id, geom, merged, action, status,
-                    "按共边策略合并，目标属性保留；源属性在 staging 保留" if status == "auto_accepted" else "未确认同类属性或使用地理坐标，需复核属性归属",
-                    target=target)
-    output.diff.update(target_before_area=other.area, target_after_area=merged.area,
-                       combined_before_area=other.area + geom.area,
-                       conservation_error=merged.area - other.area - geom.area,
-                       shared_edge_length=edge, strategy=cfg.repair.small_area_strategy,
-                       source_consumed=True)
-    return output
+    ordered = sorted(targets, key=lambda t: (-(t[3] if cfg.repair.small_area_strategy == "longest_shared_edge" else t[1].area), t[0]))
+    fallback = None
+    for target, other, other_attrs, edge in ordered:
+        merged = other.union(geom)
+        cut_loss = 0.0
+        cut_status = "auto_accepted"
+        if cfg.simple_mode and cfg.repair.hole_action == "cut_open" and merged.geom_type == "Polygon" and merged.interiors:
+            from .cut_open import repair as cut_open
+            cut = cut_open(target, merged, other_attrs, cfg)
+            if cut.status == "rejected":
+                fallback = fallback or reject(feature_id, geom, cut.reason, action)
+                continue
+            cut_loss = merged.area - cut.repaired_geom.area
+            merged = cut.repaired_geom
+            cut_status = cut.status
+        validated = validate_candidate(target, other, merged, other_attrs, cfg, action)
+        if validated.status == "rejected":
+            fallback = fallback or reject(feature_id, geom, validated.reason, action)
+            continue
+        field = cfg.repair.class_field
+        same_class = bool(field and attrs.get(field) is not None and attrs.get(field) == other_attrs.get(field))
+        status = "auto_accepted" if (same_class or cfg.repair.merge_without_class) and not cfg.is_geographic and cut_status == "auto_accepted" else "pending_review"
+        output = result(feature_id, geom, merged, action, status,
+                        "按共边策略合并，目标属性保留；源属性在 staging 保留" if status == "auto_accepted" else "属性归属、地理坐标或切口面积保护条件要求人工复核",
+                        target=target)
+        output.diff.update(target_before_area=other.area, target_after_area=merged.area,
+                           combined_before_area=other.area + geom.area,
+                           conservation_error=merged.area - other.area - geom.area,
+                           shared_edge_length=edge, strategy=cfg.repair.small_area_strategy,
+                           source_consumed=True, post_merge_cut_area=cut_loss,
+                           tolerated_overlap_area=other.intersection(geom).area)
+        if status == "auto_accepted" or not cfg.simple_mode:
+            return output
+        if fallback is None or fallback.status == "rejected":
+            fallback = output
+    return fallback or reject(feature_id, geom, "所有共边邻面的合并候选均未通过复核", action)

@@ -20,11 +20,12 @@ class RepairResult(BaseModel):
 
 
 class RepairContext:
-    """Current working layer; rebuild after every accepted transaction."""
+    """Current working layer with a base index and changed-feature overlay."""
     def __init__(self, gdf, ids):
-        self.records = {str(fid): (geom, row.drop(gdf.geometry.name).to_dict())
-                        for fid, (_, row), geom in zip(ids, gdf.iterrows(), gdf.geometry)}
-        self.index_ids = [fid for fid, (g, _) in self.records.items() if safe_geometry(g) is not None and g.is_valid]
+        attributes = gdf.drop(columns=gdf.geometry.name).to_dict("records") or [{} for _ in range(len(gdf))]
+        self.records = {str(fid): (geom, attrs) for fid, geom, attrs in zip(ids, gdf.geometry, attributes)}
+        self.index_ids = [fid for fid, (g, _) in self.records.items() if safe_geometry(g) is not None]
+        self.invalid_ids = {fid for fid in self.index_ids if not self.records[fid][0].is_valid}
         self.tree = STRtree([self.records[fid][0] for fid in self.index_ids])
         self.changed = set()
         self.blocked = set()
@@ -32,13 +33,22 @@ class RepairContext:
     def update(self, fid, geom, attrs):
         self.records[str(fid)] = (geom, attrs)
         self.changed.add(str(fid))
+        if geom is not None and not geom.is_valid:
+            self.invalid_ids.add(str(fid))
+        else:
+            self.invalid_ids.discard(str(fid))
 
     def remove(self, fid):
         self.records.pop(str(fid), None)
         self.changed.discard(str(fid))
+        self.invalid_ids.discard(str(fid))
+
+    def nearby(self, geom):
+        candidates = {self.index_ids[int(i)] for i in self.tree.query(geom)} | self.changed
+        return {fid for fid in candidates if fid in self.records and self.records[fid][0].envelope.intersects(geom.envelope)}
 
     def neighbors(self, geom, exclude=None, include_blocked=False):
-        candidates = {self.index_ids[int(i)] for i in self.tree.query(geom)} | self.changed
+        candidates = self.nearby(geom)
         return [(fid, *self.records[fid]) for fid in sorted(candidates)
                 if fid != exclude and (include_blocked or fid not in self.blocked) and fid in self.records
                 and safe_geometry(self.records[fid][0]) is not None and self.records[fid][0].is_valid
