@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.venv/
+tests/data/*.gpkg
+report/
+build/
+dist/
+web-desktop.png
+web-mobile.png
+
+.streamlit/secrets.toml
+.env
+.env.*

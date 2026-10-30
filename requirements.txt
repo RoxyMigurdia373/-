@@ -1,0 +1,7 @@
+streamlit>=1.40,<2
+shapely>=2.0,<3
+geopandas>=1.0,<2
+pyogrio>=0.9,<1
+typer>=0.12,<1
+pydantic>=2.0,<3
+pyyaml>=6,<7

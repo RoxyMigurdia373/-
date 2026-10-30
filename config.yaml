@@ -1,0 +1,37 @@
+input:
+  path: input.gpkg
+  layer: parcels
+  id_field: null
+output_dir: report
+repair:
+  small_area_strategy: longest_shared_edge
+  auto_fill_max_area: null
+  fill_if_same_class: false
+  class_field: null
+  touch_max_area_change: 1.0
+  touch_max_area_ratio: 0.01
+tolerance:
+  distance: 0.001
+  min_segment_length: 0.01
+  min_area: 1.0
+  overlap_area: 0.01
+  sliver_width: 0.5
+  sliver_ratio: 50.0
+  projected_coordinate_limit: 10000000
+  longitude_limit: 180
+  latitude_limit: 90
+rules:
+  multipart_policy: warn
+  hole_policy: info
+  sharp_angle_degrees: 15
+  max_issues_per_feature: 50
+  max_pairs: 2000000
+  segment_index_threshold: 2000
+  multipart_direct_threshold: 20
+  location_precision: 6
+  enable:
+    - HAS_HOLE
+    - TOUCH_ISLAND
+    - MULTIPART
+    - SMALL_AREA
+    - OVERLAP
