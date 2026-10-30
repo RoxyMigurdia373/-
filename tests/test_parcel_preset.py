@@ -40,15 +40,16 @@ def test_cut_instead_of_fill(touch):
     assert result.diff['removed_area'] < 1
 
 
-def test_cut_workflow_accepts_and_preserves_occupied_hole():
+def test_preset_slits_open_and_preserves_occupied_hole():
     inner = box(4,4,6,6)
     outer = Polygon(box(0,0,20,20).exterior, [inner.exterior])
     gdf = gpd.GeoDataFrame(geometry=[outer,inner], crs=32650)
     gdf, cfg, _ = prepare_parcels(gdf)
+    assert cfg.repair.hole_action == 'slit'
     # Only inspect hole action here: no small-area merge for this fixture.
     cfg.tolerance.min_area = 0
     bundle = repair_layer(gdf,cfg)
-    event = next(r for r in bundle['records'] if r['action']=='cut_open_holes')
+    event = next(r for r in bundle['records'] if r['action']=='slit_open_holes')
     assert event['status']=='auto_accepted', event
     assert bundle['accepted'].geometry.iloc[0].intersection(inner).area == 0
 

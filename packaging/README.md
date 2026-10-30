@@ -39,7 +39,7 @@ GDAL/PROJ、tkinter 与网页资源）。构建中间文件在 `build\pyinstalle
 | `packaging/vectopo_check.spec` | onefile + 窗口模式（`console=False`）；整体收集 geopandas/shapely/pyproj/pyogrio 的二进制与 CRS 数据；排除 matplotlib/streamlit/PIL 等未用依赖 |
 | `packaging/rth_env.py` | 运行时钩子，在导入前把 `PROJ_DATA`/`PROJ_LIB`/`GDAL_DATA` 指向 EXE 内解包目录，避免目标机器没装 PROJ 时报坐标转换错误 |
 | `packaging/make_icon.py` | 生成 `packaging/app.ico`（绿色圆角底 + 两个叠放地块 + 琥珀色重叠带）；图标已提交，改样式后重新执行即可 |
-| `packaging/version_info.txt` | EXE 属性里的产品名/版本（0.2.0，中文描述） |
+| `packaging/version_info.txt` | EXE 属性里的产品名/版本（0.3.0，中文描述） |
 
 EXE 内的启动流程：双击 → 解包到临时目录（首次 3–6 秒）→ 直接打开原生桌面窗口 → 选数据 → 处理，全程本进程内完成，没有本地服务、没有浏览器、没有数据拷贝。需要网页时加 `--web`，才会起 `127.0.0.1:8765`（被占用自动换空闲端口）并打开浏览器。
 
@@ -57,6 +57,7 @@ GPKG 读写（几何 + CRS）、重叠面裁剪修复、桌面窗口组件（Not
 * 桌面窗口不联网、不起端口；只有 `--web` 模式会监听 `127.0.0.1:8765`（被占用自动换端口），数据不出本机。
 * 成果默认写到 `<数据所在目录>\<文件名>_成果`，窗口里可“打开成果目录”。临时解包目录在关闭窗口时清理。
 * 排错日志：`%LOCALAPPDATA%\vectopo-check\launcher.log`（窗口内也会显示最后几行）。
-* 命令行用法：`"地类图斑拓扑检查与修复工具_v0.2.0.exe" --input 数据.gpkg`（直接载入数据）、
+* 命令行用法：`"地类图斑拓扑检查与修复工具_v0.3.0.exe" --input 数据.gpkg`（直接载入数据）、
   `--web --serve --no-browser --port 8765`（网页模式）、`--selftest 报告.json`。
+  岛洞方式在窗口里用“岛洞处理”单选框选择（默认 0.1 毫米细缝），CLI 对应 `check ... --hole-action slit|cut_open|split_open|fill|legacy`。
   需要控制台输出的调试版，把 spec 里的 `console=False` 改为 `True` 后重新打包。

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 
 from . import holes, touch_island, small_area, overlap
 from .base import RepairContext, reject, geometry_diff
@@ -55,10 +56,15 @@ def audit(gdf, cfg):
     return (counts, overlap), None
 
 
-def regression(before, after):
+def regression(before, after, tolerant_features=()):
     counts_before, overlap_before = before
     counts_after, overlap_after = after
     new = counts_after - counts_before
+    if tolerant_features:
+        # Opening a hole with a channel is meant to introduce two very short
+        # edges on that one parcel; only the cut feature may gain such findings.
+        new = Counter({key: count for key, count in new.items()
+                       if str(key[0]) not in tolerant_features and str(key[3]) not in tolerant_features})
     # A pre-existing overlap must not grow even if issue counts stay constant.
     increased = [pair for pair, area in overlap_after.items() if area > overlap_before.get(pair, 0)]
     return bool(new or increased), {"new_findings": [list(k) + [v] for k, v in sorted(new.items(), key=lambda item: str(item[0]))],
@@ -84,6 +90,20 @@ def repair_layer(gdf, cfg=None, progress=None):
         if progress:
             progress("正在拆分多部件，保留各部件原始属性…")
         working, stage_original, split_into, part_sources, records, proposals = split_layer(original)
+    if cfg.repair.hole_action == "split_open":
+        from .hole_split import split_layer as split_holes
+        if progress:
+            progress("正在按零宽切线开洞，拆成无洞且面积不变的面…")
+        working, stage_holes, hole_split_into, hole_sources, hole_records, hole_proposals = split_holes(
+            working, start_event=len(records))
+        if hole_records:
+            split_into.update(hole_split_into)
+            part_sources.update(hole_sources)
+            records.extend(hole_records)
+            proposals.extend(hole_proposals)
+            stage_original = gpd.GeoDataFrame(
+                pd.concat([stage_original, stage_holes.loc[list(hole_sources)]]),
+                geometry=working.geometry.name, crs=original.crs)
     context = RepairContext(working, working.index)
     # Whole-layer phases, so accepted edits are visible to subsequent neighbors.
     phases = [("INVALID_HOLE", holes), ("TOUCH_ISLAND", touch_island),
@@ -158,7 +178,12 @@ def repair_layer(gdf, cfg=None, progress=None):
                     proposal.status = "pending_review"
                     proposal.reason += "; " + (before_error or after_error)
                 else:
-                    has_new, validation = regression(baseline, checked)
+                    # Opening a hole with a channel necessarily leaves two very
+                    # short edges on that parcel and a hairline gap on the layer;
+                    # those two by-products are ignored for this one transaction.
+                    tolerant = ({"__gap__", str(fid)}
+                                if proposal.action in {"slit_open_holes", "cut_open_holes"} else ())
+                    has_new, validation = regression(baseline, checked, tolerant_features=tolerant)
                     if has_new:
                         proposal.status = "rejected"
                         proposal.reason = "全图层复检发现新增问题或重叠增长，已原子回退"

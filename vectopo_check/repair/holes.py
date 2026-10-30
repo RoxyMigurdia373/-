@@ -1,13 +1,20 @@
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 from ..checks.base import safe_geometry
-from .base import reject, validate_candidate
+from .base import reject, result, validate_candidate
 
 
 def repair(feature_id, geom, attrs, cfg):
-    if cfg.repair.hole_action == "cut_open":
+    action = cfg.repair.hole_action
+    if action == "split_open":
+        # Holes were already cut open by the zero-width pre-pass; anything left
+        # keeps its hole on purpose so no area is silently moved.
+        return reject(feature_id, geom, "零宽切分已处理，剩余洞保持原样", "none")
+    if action in {"cut_open", "slit"}:
         from .cut_open import repair as cut
         return cut(feature_id, geom, attrs, cfg)
+    if action == "fill":
+        return fill_all(feature_id, geom, attrs, cfg)
     if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
         return reject(feature_id, geom, "仅支持坐标有限的 Polygon / MultiPolygon")
     parts = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
@@ -52,3 +59,26 @@ def repair(feature_id, geom, attrs, cfg):
                               "rebuild_invalid_holes" if structural else "fill_holes",
                               "pending_review" if structural else "auto_accepted",
                               "非法洞结构重建必须人工确认" if structural else "满足洞面积及分类条件")
+
+
+def fill_all(feature_id, geom, attrs, cfg):
+    """Absorb every hole into the parcel: no slit, no new features, area grows."""
+    if cfg.is_geographic:
+        return reject(feature_id, geom, "填洞必须在米制投影下执行", "fill_holes")
+    if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
+        return reject(feature_id, geom, "不支持该几何", "fill_holes")
+    parts = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
+    if not any(p.interiors for p in parts):
+        return reject(feature_id, geom, "没有岛洞，无需填充", "none")
+    filled_area = sum(Polygon(ring).area for poly in parts for ring in poly.interiors)
+    rebuilt = [Polygon(poly.exterior) for poly in parts]
+    candidate = rebuilt[0] if geom.geom_type == "Polygon" else MultiPolygon(rebuilt)
+    if not candidate.is_valid:
+        return reject(feature_id, geom, "填洞后几何不合法，已回退", "fill_holes")
+    if cfg.repair.fill_all_max_area is not None and filled_area > cfg.repair.fill_all_max_area:
+        return reject(feature_id, geom,
+                      f"洞面积 {filled_area:.2f} 平方米超过填平上限 {cfg.repair.fill_all_max_area:.2f}", "fill_holes")
+    res = result(feature_id, geom, candidate, "fill_holes", "auto_accepted",
+                 "按所选方式填平岛洞：无裂缝、单要素，面积增加")
+    res.diff.update(filled_area=filled_area, hole_count_before=sum(len(p.interiors) for p in parts), hole_count_after=0)
+    return res

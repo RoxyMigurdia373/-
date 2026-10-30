@@ -41,9 +41,16 @@ class Rules(Settings):
     enable: list[IssueType] = Field(default_factory=lambda: list(COMMON_RULES))
 
 
+HOLE_ACTIONS = ("legacy", "cut_open", "slit", "split_open", "fill")
+
+
 class RepairSettings(Settings):
-    hole_action: Literal["legacy", "cut_open"] = "legacy"
+    # legacy: keep holes, cut_open: 1 cm channel, slit: hairline channel,
+    # split_open: zero-width cut that splits the parcel, fill: absorb the hole.
+    hole_action: Literal["legacy", "cut_open", "slit", "split_open", "fill"] = "legacy"
     cut_width: float = Field(default=0.01, gt=0)
+    slit_width: float = Field(default=0.0001, gt=0)
+    fill_all_max_area: float | None = Field(default=None, ge=0)
     merge_without_class: bool = False
     delete_isolated_small_area: bool = False
     small_area_strategy: Literal["longest_shared_edge", "largest_area"] = "longest_shared_edge"

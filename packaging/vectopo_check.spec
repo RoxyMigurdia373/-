@@ -15,7 +15,8 @@ PACKAGE = os.path.join(ROOT, "vectopo_check")
 datas = [(os.path.join(PACKAGE, "static"), os.path.join("vectopo_check", "static"))]
 binaries = []
 hiddenimports = ["vectopo_check.cli", "vectopo_check.web", "vectopo_check.launcher",
-                 "vectopo_check.desktop", "vectopo_check.pipeline"]
+                 "vectopo_check.desktop", "vectopo_check.pipeline",
+                 "vectopo_check.repair.hole_split"]
 
 # GIS wheels ship compiled libraries and CRS databases that the generic hooks
 # do not always pick up, so collect these packages whole.

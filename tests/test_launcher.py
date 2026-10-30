@@ -72,5 +72,6 @@ def test_selftest_reports_every_probe(tmp_path):
     assert report["version"]
     names = [item["name"] for item in report["checks"]]
     assert names == ["versions", "proj database", "shapely overlay", "proj transform",
-                     "GPKG write/read", "overlap repair", "desktop window", "web assets", "web server"]
+                     "GPKG write/read", "overlap repair", "hole modes", "desktop window",
+                     "web assets", "web server"]
     assert all(item["ok"] for item in report["checks"])

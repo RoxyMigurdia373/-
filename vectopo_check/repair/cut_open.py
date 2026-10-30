@@ -1,3 +1,9 @@
+"""Open a hole by cutting a narrow channel from the hole ring to the outer ring.
+
+A hole-free single polygon needs a channel of positive width: a zero-width slit
+would make the ring touch itself, which GEOS rejects (see ``hole_split`` for the
+exact-area alternative that splits the parcel instead).
+"""
 from shapely.geometry import Polygon, MultiPolygon, LineString
 from shapely.ops import nearest_points, unary_union
 from ..checks.base import safe_geometry
@@ -5,7 +11,12 @@ from .base import reject, result
 
 
 def repair(feature_id, geom, attrs, cfg):
-    action = "cut_open_holes"
+    width = cfg.repair.slit_width if cfg.repair.hole_action == "slit" else cfg.repair.cut_width
+    action = "slit_open_holes" if cfg.repair.hole_action == "slit" else "cut_open_holes"
+    return open_holes(feature_id, geom, attrs, cfg, width, action)
+
+
+def open_holes(feature_id, geom, attrs, cfg, width, action="cut_open_holes"):
     if cfg.is_geographic:
         return reject(feature_id, geom, "切洞必须在米制投影下执行", action)
     if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
@@ -34,7 +45,7 @@ def repair(feature_id, geom, attrs, cfg):
                     b = ring.interpolate((index - 1) / 16, normalized=True)
                     a = nearest_points(cut.exterior, b)[0]
                 connector = a if a.equals(b) else LineString([a, b])
-                channel = connector.buffer(cfg.repair.cut_width / 2)
+                channel = connector.buffer(width / 2)
                 candidate_cut = cut.difference(channel)
                 if candidate_cut.geom_type == "Polygon" and candidate_cut.is_valid and len(candidate_cut.interiors) < before:
                     opened = candidate_cut
@@ -50,7 +61,10 @@ def repair(feature_id, geom, attrs, cfg):
         return reject(feature_id, geom, "切开后整体几何不合法，已回退", action)
     loss = geom.area - candidate.area
     protected = abs(loss) > cfg.repair.touch_max_area_change or abs(loss) / max(abs(geom.area), cfg.tolerance.distance) > cfg.repair.touch_max_area_ratio
+    reason = ("0.1 毫米级细缝连通洞与外边界，面积损失可忽略；未填充洞内区域"
+              if action == "slit_open_holes" else "窄通道连接洞与外边界；未填充洞内区域")
     res = result(feature_id, geom, candidate, action, "pending_review" if protected else "auto_accepted",
-                 "切口面积变化超过保护阈值，需复核" if protected else "窄通道连接洞与外边界；未填充洞内区域")
-    res.diff.update(cut_width=cfg.repair.cut_width, removed_area=loss)
+                 "切口面积变化超过保护阈值，需复核" if protected else reason)
+    res.diff.update(cut_width=width, removed_area=loss, hole_count_before=sum(len(p.interiors) for p in parts),
+                    hole_count_after=sum(len(p.interiors) for p in output))
     return res

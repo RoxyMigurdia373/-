@@ -35,6 +35,22 @@ FILETYPES = [
 ]
 ISSUE_ROWS = 1500
 SEVERITY_TAGS = {"ERROR": ("#b42318", "#fef3f2"), "WARN": ("#b54708", "#fffaeb"), "INFO": ("#175cd3", "#eff8ff")}
+# Hole strategies, in the order they appear in the window. The first one is the
+# default: a 0.1 mm slit keeps one parcel and loses well under a square metre.
+HOLE_CHOICES = (
+    ("slit", "0.1 毫米细缝"),
+    ("cut_open", "1 厘米开缝"),
+    ("split_open", "零宽切分"),
+    ("fill", "填平"),
+    ("legacy", "不处理"),
+)
+HOLE_HINTS = {
+    "slit": "0.1 毫米细缝：切口损失约 0.0006 m²/条（≈0.000001 亩），仍是 1 个图斑。",
+    "cut_open": "1 厘米开缝：损失约 0.01 m² × 缝长，通常不足 1 m²，仍是 1 个图斑。",
+    "split_open": "零宽切分：沿穿过洞的切线把图斑拆成几块，面积严格不变、都不带洞，图斑数会变多。",
+    "fill": "填平：洞并进图斑，单要素、无裂缝，但图斑面积会变大（总量增加）。",
+    "legacy": "不处理：洞保持原样，只在配置满足自动填充条件时才填。",
+}
 
 
 class DesktopApp:
@@ -100,6 +116,7 @@ class DesktopApp:
         self.out_var = tk.StringVar(value=str(output_dir) if output_dir else "")
         self.simple_var = tk.BooleanVar(value=True)
         self.repair_var = tk.BooleanVar(value=True)
+        self.hole_var = tk.StringVar(value=HOLE_CHOICES[0][0])
         self.status_var = tk.StringVar(value="等待选择数据")
         self.message_var = tk.StringVar(value="就绪")
         self.percent_var = tk.StringVar(value="0%")
@@ -132,7 +149,18 @@ class DesktopApp:
                                                                           pady=(px(8), 0))
         self.mode_hint = ttk.Label(options, text="", foreground="#57606a")
         self.mode_hint.grid(row=2, column=0, columnspan=5, sticky="w", pady=(px(6), 0))
+        hole_row = ttk.Frame(options)
+        hole_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(px(6), 0))
+        ttk.Label(hole_row, text="岛洞处理").pack(side="left")
+        self.hole_buttons = {}
+        for value, label in HOLE_CHOICES:
+            button = ttk.Radiobutton(hole_row, text=label, value=value, variable=self.hole_var)
+            button.pack(side="left", padx=(px(8), 0))
+            self.hole_buttons[value] = button
+        self.hole_hint = ttk.Label(options, text="", foreground="#57606a")
+        self.hole_hint.grid(row=4, column=0, columnspan=5, sticky="w", pady=(px(4), 0))
         self.simple_var.trace_add("write", lambda *_: self._sync_mode())
+        self.hole_var.trace_add("write", lambda *_: self._sync_mode())
         self._sync_mode()
 
         bar = ttk.Frame(root, padding=(px(16), px(8), px(16), 0))
@@ -203,6 +231,7 @@ class DesktopApp:
         else:
             self.mode_hint.configure(
                 text="高级模式：沿用配置默认阈值（最小面积 1 m²、重叠 0.01 m²），结果依赖输入坐标系。")
+        self.hole_hint.configure(text=HOLE_HINTS.get(self.hole_var.get(), ""))
 
     def pick_file(self):
         from tkinter import filedialog
@@ -266,6 +295,7 @@ class DesktopApp:
     def _config(self, output_dir):
         cfg = Config()
         cfg.simple_mode = bool(self.simple_var.get())
+        cfg.repair.hole_action = self.hole_var.get()
         cfg.output_dir = str(output_dir)
         return cfg
 
@@ -297,17 +327,20 @@ class DesktopApp:
         self._set_running(True)
         self._log(f"开始处理：{self.source}")
         self._log(f"参数：图层 {layer or '自动'}，简易模式 {'开' if cfg.simple_mode else '关'}，"
-                  f"自动修复 {'开' if repair else '关'}，成果目录 {out}")
-        self.worker = threading.Thread(target=self._work, args=(self.source, layer, cfg, out, repair),
+                  f"自动修复 {'开' if repair else '关'}，岛洞 {dict(HOLE_CHOICES).get(cfg.repair.hole_action, '?')}，"
+                  f"成果目录 {out}")
+        self.worker = threading.Thread(target=self._work,
+                                       args=(self.source, layer, cfg, out, repair, cfg.repair.hole_action),
                                        name="vectopo-run", daemon=True)
         self.worker.start()
 
-    def _work(self, source, layer, cfg, out, repair):
+    def _work(self, source, layer, cfg, out, repair, hole_action):
         def progress(message):
             self.queue.put(("progress", message))
         try:
             payload = run_pipeline(source, layer=layer, cfg=cfg, output_dir=out, repair=repair,
-                                   progress=progress, cancel=self.cancel.is_set)
+                                   progress=progress, cancel=self.cancel.is_set,
+                                   hole_action=hole_action)
         except Cancelled:
             self.queue.put(("cancelled", None))
         except Exception:
@@ -332,7 +365,7 @@ class DesktopApp:
         payload = run_pipeline(source, layer=layer if layer is not None else (self.layer_var.get() or None),
                                cfg=cfg, output_dir=out, progress=self._direct_progress,
                                repair=bool(self.repair_var.get()) if repair is None else repair,
-                               cancel=cancel)
+                               cancel=cancel, hole_action=cfg.repair.hole_action)
         self.started_at = self.started_at or time.perf_counter()
         self._on_done(payload)
         self.root.update_idletasks()

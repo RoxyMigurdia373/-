@@ -109,7 +109,7 @@ def selftest(report_path=None):
     import pyogrio
     import pyproj
     import shapely
-    from shapely.geometry import box
+    from shapely.geometry import box, Polygon
 
     from .config import Config
     from .preset import prepare_parcels
@@ -173,6 +173,27 @@ def selftest(report_path=None):
                 "features": len(bundle["accepted"]), "records": len(bundle["records"])}
 
     probe("overlap repair", overlap_repair)
+
+    def hole_modes():
+        donut = Polygon(box(0, 0, 20, 20).exterior, [box(8, 8, 12, 12).exterior])
+        frame = gpd.GeoDataFrame({"name": ["p"]}, geometry=[donut], crs="EPSG:32650")
+        summary = {}
+        for mode in ("slit", "cut_open", "split_open", "fill"):
+            cfg = Config()
+            cfg.simple_mode = True
+            cfg.repair.hole_action = mode
+            cfg.output_dir = "."
+            bundle = repair_layer(frame, cfg)
+            accepted = bundle["accepted"]
+            summary[mode] = {"features": len(accepted), "holes": int(sum(len(g.interiors) for g in accepted.geometry)),
+                             "area": round(float(accepted.area.sum()), 4)}
+            assert bundle["verification"]["passed"], bundle["verification"]
+        assert summary["slit"]["holes"] == 0 and summary["slit"]["features"] == 1, summary
+        assert summary["split_open"]["features"] == 2 and summary["split_open"]["area"] == 384.0, summary
+        assert summary["fill"]["area"] == 400.0, summary
+        return summary
+
+    probe("hole modes", hole_modes)
 
     def desktop_window():
         import tkinter as tk

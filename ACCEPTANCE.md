@@ -105,3 +105,14 @@
 - 修复 `_pump` 的一处顺序缺陷：完成消息之后仍排队到达的进度消息会覆盖“处理完成”文案，现以 `_finished` 标记忽略收尾后的进度更新（新增用例 `test_stale_progress_does_not_override_the_final_message`）。
 - 版本 0.2.0：`vectopo_check/__init__.py` 与 `packaging/version_info.txt` 同步，EXE 产物为 `dist\地类图斑拓扑检查与修复工具_v0.2.0.exe`（71.6 MB），打包自检 9 项全 OK。
 
+## 2026-10-31 岛洞处理方式可选（v0.3.0）
+
+* 背景：用户要求“现在的切割 1 厘米能不能改成无面积切割”。实测 `shapely` 2.2 / GEOS 3.14：合法单要素无法零宽度开缝（`cut_width=0` 立即 `Ring Self-intersection`），因此提供三种新方式，并在处理前可选。
+* 新增 `hole_action` 取值：`slit`（0.1 毫米细缝，默认）、`cut_open`（1 厘米开缝，旧行为）、`split_open`（零宽弦线切分）、`fill`（填平）、`legacy`（不处理）。`repair.cut_open` 模块按 `hole_action` 选择缝宽，`repair/holes.py` 负责分派，`repair/hole_split.py` 实现零宽切分（`split_open_holes`）。
+* 20×20 面、中央 4×4 洞（面积 384 m²）实测：细缝损失 0.0008 m²、1 厘米开缝 0.08 m²、零宽切分面积差 0.0（2 个图斑、均无洞）、填平 400 m²。200×200 面（洞 80×80、面积 33 600 m²）细缝损失 0.006 m²，切分后 2 个图斑、合计 33 600 m²。
+* 200 个带洞图斑（每个 20×20 面含 4×4 洞，共 76 800 m²）实测：细缝 0.48 秒、全部 `auto_accepted`、处理后 200 个图斑无洞、面积 76 799.84 m²；零宽切分 0.10 秒、400 个图斑无洞、面积正好 76 800 m²。
+* `workflow.regression(before, after, tolerant_features=())`：开缝这类事务只豁免“被切图斑自身的新增发现”与 `__gap__` 的发丝级空隙，其他要素的新增问题仍会回退；零宽切分不豁免任何检查。
+* 桌面窗口新增“岛洞处理”单选组与说明文字，`--hole-action` 同步到 CLI；`pipeline.run_pipeline(..., hole_action=None)` 在预设之后应用选择，非法值直接报“未知的岛洞处理方式”。
+* 测试：新增 `tests/test_hole_modes.py`（11 项），全量 **154 passed**。
+
+

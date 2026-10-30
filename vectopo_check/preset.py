@@ -27,7 +27,7 @@ def prepare_parcels(gdf, cfg=None):
     cfg.rules.enable = list(COMMON_RULES)
     cfg.tolerance.min_area = SMALL_AREA_M2
     cfg.tolerance.min_segment_length = cfg.tolerance.distance
-    cfg.repair.hole_action = "cut_open"
+    cfg.repair.hole_action = "slit"
     cfg.repair.small_area_strategy = "longest_shared_edge"
     cfg.repair.merge_without_class = True
     cfg.repair.delete_isolated_small_area = True
@@ -36,4 +36,5 @@ def prepare_parcels(gdf, cfg=None):
     cfg.repair.class_field = None
     return frame, cfg, {"source_crs": original_crs, "analysis_crs": str(frame.crs),
                         "min_area_mu": 0.1, "min_area_m2": SMALL_AREA_M2,
-                        "cut_width_m": cfg.repair.cut_width}
+                        "hole_action": cfg.repair.hole_action,
+                        "cut_width_m": cfg.repair.cut_width, "slit_width_m": cfg.repair.slit_width}

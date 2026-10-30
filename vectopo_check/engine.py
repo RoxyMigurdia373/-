@@ -138,14 +138,19 @@ def check_layer(gdf, cfg=None, input_path="<memory>", layer=None, progress=None)
     return build_report(dedupe_and_limit(issues, cfg), gdf, cfg, input_path, layer, sampled, total, len(candidates))
 
 
-def run_check(input_path, layer=None, cfg=None, repair=False, output_dir=None):
+def run_check(input_path, layer=None, cfg=None, repair=False, output_dir=None, hole_action=None):
     gdf = read_layer(input_path, layer)
-    if cfg is not None and cfg.simple_mode:
+    if cfg is None:
+        cfg = Config()
+    if cfg.simple_mode:
         from .preset import prepare_parcels
         gdf, cfg, _ = prepare_parcels(gdf, cfg)
+    if hole_action is not None:
+        # The preset forces its own default, so an explicit choice is applied after it.
+        cfg.repair.hole_action = hole_action
     report = check_layer(gdf, cfg, input_path, layer)
     if repair:
-        run_repair(gdf, cfg, output_dir or (cfg or Config()).output_dir, input_path)
+        run_repair(gdf, cfg, output_dir or cfg.output_dir, input_path)
     return report
 
 

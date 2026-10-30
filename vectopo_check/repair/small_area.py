@@ -42,7 +42,8 @@ def repair(feature_id, geom, attrs, cfg):
         merged = other.union(geom)
         cut_loss = 0.0
         cut_status = "auto_accepted"
-        if cfg.simple_mode and cfg.repair.hole_action == "cut_open" and merged.geom_type == "Polygon" and merged.interiors:
+        if (cfg.simple_mode and cfg.repair.hole_action in {"cut_open", "slit"}
+                and merged.geom_type == "Polygon" and merged.interiors):
             from .cut_open import repair as cut_open
             cut = cut_open(target, merged, other_attrs, cfg)
             if cut.status == "rejected":

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from .config import Config
+from .config import Config, HOLE_ACTIONS
 from .engine import check_layer, run_repair
 from .export import write_report_bundle, write_vector_export
 from .io import read_layer
@@ -38,14 +38,20 @@ def guarded_progress(progress=None, cancel=None):
 
 
 def run_pipeline(path, layer=None, cfg=None, output_dir=None, repair=False,
-                 progress=None, cancel=None, exports=True):
+                 progress=None, cancel=None, exports=True, hole_action=None):
     """Check one layer, optionally repair it, and write every report to disk.
+
+    ``hole_action`` overrides the hole strategy chosen by the preset, so a front
+    end can offer 1 cm channel / hairline slit / zero-width split / fill without
+    touching the config file.
 
     Returns a result dict (report, repair summary/verification, export errors,
     the declared config and the loaded frame). Raises :class:`Cancelled` before
     writing anything when the caller asked to stop.
     """
     cfg = cfg or Config()
+    if hole_action is not None and hole_action not in HOLE_ACTIONS:
+        raise ValueError(f"未知的岛洞处理方式：{hole_action}")
     out = Path(output_dir) if output_dir is not None else Path(cfg.output_dir)
     report_progress = guarded_progress(progress, cancel)
     report_progress("正在读取矢量数据…")
@@ -54,6 +60,8 @@ def run_pipeline(path, layer=None, cfg=None, output_dir=None, repair=False,
     if cfg.simple_mode:
         report_progress(SIMPLE_HINT)
         frame, cfg, preset = prepare_parcels(frame, cfg)
+    if hole_action is not None:
+        cfg.repair.hole_action = hole_action
     report = check_layer(frame, cfg, input_path=Path(path).name, layer=layer, progress=report_progress)
     report_progress("检查完成，正在写入报告…")
     out.mkdir(parents=True, exist_ok=True)
