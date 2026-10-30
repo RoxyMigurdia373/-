@@ -1,12 +1,12 @@
-"""Desktop launcher used by the packaged Windows executable.
+"""Entry point of the packaged Windows executable.
 
-Double-clicking the EXE starts the local web workbench in the background and
-shows one small window: the browser carries the whole interface, the window only
-keeps the address, a log and a clean way to stop the server.
-
-Run from source with ``python -m vectopo_check.launcher``; ``--selftest`` proves
-that the frozen bundle can still read/write GIS formats and repair overlaps,
-which is what breaks first when a PyInstaller build forgets a data file.
+Double-clicking the EXE opens the native desktop window
+(:mod:`vectopo_check.desktop`): pick a file, run the check and repair in the
+same process, read the results. Nothing leaves the machine and no browser is
+involved. ``--web`` still starts the loopback workbench for browser use, and
+``--selftest`` proves that a frozen bundle can read/write GIS formats and
+repair overlaps, which is what breaks first when a PyInstaller build forgets a
+data file.
 """
 
 from __future__ import annotations
@@ -173,6 +173,24 @@ def selftest(report_path=None):
                 "features": len(bundle["accepted"]), "records": len(bundle["records"])}
 
     probe("overlap repair", overlap_repair)
+
+    def desktop_window():
+        import tkinter as tk
+
+        from .desktop import DesktopApp
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = DesktopApp(root)
+            root.update_idletasks()
+            tabs = [app.notebook.tab(tab, "text") for tab in app.notebook.tabs()]
+            assert "问题明细" in tabs and "运行日志" in tabs, tabs
+            return {"tabs": tabs, "scale": round(app.scale, 2)}
+        finally:
+            root.destroy()
+
+    probe("desktop window", desktop_window)
 
     def static_page():
         page = Path(__file__).resolve().parent / "static" / "index.html"
@@ -378,9 +396,11 @@ def run_gui(port=8765, open_browser=True):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="vectopo-check", description=f"{APP_NAME} v{__version__}")
-    parser.add_argument("--port", type=int, default=8765, help="本地服务端口，默认 8765（被占用时自动改用空闲端口）")
-    parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
-    parser.add_argument("--serve", action="store_true", help="只启动本地服务，不显示窗口（用于脚本或调试）")
+    parser.add_argument("--input", metavar="PATH", default=None, help="启动后直接打开这个矢量文件")
+    parser.add_argument("--web", action="store_true", help="改用浏览器界面（本机回环服务），而不是桌面窗口")
+    parser.add_argument("--port", type=int, default=8765, help="浏览器界面的端口，默认 8765（被占用时自动改用空闲端口）")
+    parser.add_argument("--no-browser", action="store_true", help="浏览器界面启动后不自动打开浏览器")
+    parser.add_argument("--serve", action="store_true", help="只启动本机回环服务，不显示窗口（用于脚本或调试）")
     parser.add_argument("--selftest", nargs="?", const="selftest.json", default=None,
                         metavar="REPORT", help="运行打包自检并写出 JSON 报告")
     args = parser.parse_args(argv)
@@ -398,7 +418,12 @@ def main(argv=None):
         finally:
             handle.close()
         return 0
-    run_gui(args.port, not args.no_browser)
+    if args.web:
+        run_gui(args.port, not args.no_browser)
+        return 0
+    from .desktop import launch
+
+    launch(initial_path=args.input)
     return 0
 
 

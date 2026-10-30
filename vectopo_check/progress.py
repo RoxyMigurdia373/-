@@ -9,7 +9,7 @@ def progress_percent(message):
         return 64
     if "processed / staging" in message:
         return 97
-    for phase, start in [("INVALID_HOLE", 65), ("TOUCH_ISLAND", 75), ("SMALL_AREA", 85)]:
+    for phase, start in [("INVALID_HOLE", 65), ("TOUCH_ISLAND", 75), ("OVERLAP", 80), ("SMALL_AREA", 85)]:
         if "正在处理 " + phase in message:
             return int(start + 10 * ratio)
     if "正在切开" in message or "修复候选" in message:

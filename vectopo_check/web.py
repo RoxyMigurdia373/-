@@ -8,12 +8,10 @@ import tempfile
 import threading
 import uuid
 import webbrowser
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
-from zipfile import ZipFile
 
 import geopandas as gpd
 import yaml
@@ -21,47 +19,15 @@ from shapely.geometry import mapping
 
 from .checks.base import json_finite, safe_geometry
 from .config import Config
-from .engine import check_layer, run_repair
-from .io import read_layer
-from .report import write_reports
-from .export import write_vector_export, write_report_bundle, write_shp_zip
-from .preset import prepare_parcels
+from .export import write_shp_zip
+from .io import SHP_SUFFIXES, unpack_shapefile
+from .pipeline import run_pipeline
 from .progress import progress_percent
 
 MAX_BODY = 256 * 1024 * 1024
 PREVIEW_LIMIT = 2000
 REPORT_FILES = {"report.json", "issues.geojson", "report.csv", "summary.txt", "checked_features.gpkg", "check_reports.zip", "repair_report.json", "repair_staging.gpkg"}
-UPLOAD_SUFFIXES = {".gpkg", ".geojson", ".json", ".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".sbn", ".sbx", ".zip"}
-
-
-def unpack_shapefile(archive_path, folder):
-    """Select one SHP bundle and normalize names without trusting ZIP paths."""
-    with ZipFile(archive_path) as archive:
-        entries = [i for i in archive.infolist() if not i.is_dir() and not i.filename.startswith('__MACOSX/')]
-        if sum(i.file_size for i in entries) > 512 * 1024 * 1024:
-            raise ValueError("ZIP 解压后超过 512 MB，请拆分图层")
-        mains = [i for i in entries if i.filename.lower().endswith('.shp')]
-        if len(mains) != 1:
-            raise ValueError("ZIP 内必须包含且仅包含一个 SHP 图层")
-        main = mains[0]
-        stem = main.filename[:-4].lower()
-        companions = {}
-        for item in entries:
-            name = item.filename.lower()
-            suffix = Path(name).suffix
-            if name[:-len(suffix)] == stem and suffix in UPLOAD_SUFFIXES - {'.zip'}:
-                if suffix in companions:
-                    raise ValueError("ZIP 内同名配套文件重复")
-                companions[suffix] = item
-        if not {'.shp', '.shx', '.dbf'}.issubset(companions):
-            raise ValueError("ZIP 中缺少同名 .shp/.shx/.dbf 文件")
-        target = folder / 'extracted'
-        target.mkdir()
-        for suffix, item in companions.items():
-            # A fixed basename avoids ZIP filename encoding differences on Windows.
-            with archive.open(item) as source, (target / ('dataset' + suffix)).open('wb') as dest:
-                shutil.copyfileobj(source, dest)
-        return target / 'dataset.shp'
+UPLOAD_SUFFIXES = SHP_SUFFIXES
 
 
 class Workspace:
@@ -154,45 +120,25 @@ class Workspace:
         with self.lock:
             self.jobs[job] = {"status": "running"}
         try:
-            progress("正在读取矢量数据…")
-            gdf = read_layer(path, layer)
-            preset = None
-            if cfg.simple_mode:
-                progress("正在自动选择米制坐标系，面积阈值固定为 0.1 亩…")
-                gdf, cfg, preset = prepare_parcels(gdf, cfg)
-            report = check_layer(gdf, cfg, input_path=path.name, layer=layer, progress=progress)
-            out = self.root / job
-            progress("检查完成，正在写入报告和压缩包…")
-            write_reports(report, out)
-            write_report_bundle(out)
-            export_error = None
-            fields = None
-            try:
-                progress("正在导出带问题字段的矢量副本…")
-                fields = write_vector_export(gdf, report, cfg, out)
-            except Exception as exc:
-                export_error = str(exc)
-            repair_summary, repair_error, repair_verification = None, None, None
-            if repair:
-                try:
-                    progress("正在切开岛洞并合并小于0.1亩图斑，逐项复核邻接关系…" if cfg.simple_mode else "正在生成修复候选并逐事务全图层复检，耗时可能较长…")
-                    repair_payload = run_repair(gdf, cfg, out, path, progress=progress)
-                    repair_summary = repair_payload["summary"]
-                    repair_verification = {key:value for key,value in repair_payload.get("verification", {}).items() if key != "remaining"}
-                except Exception as exc:
-                    repair_error = str(exc)
-            stride = max(1, (len(gdf) + PREVIEW_LIMIT - 1) // PREVIEW_LIMIT)
+            payload = run_pipeline(path, layer=layer, cfg=cfg, output_dir=self.root / job,
+                                   repair=repair, progress=progress)
+            frame, report = payload["frame"], payload["report"]
+            verification = payload["repair_verification"]
+            stride = max(1, (len(frame) + PREVIEW_LIMIT - 1) // PREVIEW_LIMIT)
             features = [{"type": "Feature", "geometry": json_finite(mapping(g)), "properties": {}}
-                        for g in gdf.geometry.iloc[::stride] if safe_geometry(g) is not None]
+                        for g in frame.geometry.iloc[::stride] if safe_geometry(g) is not None]
             browser_report = report.model_dump(mode="json", exclude={"issues"})
             browser_report["issues"] = [i.model_dump(mode="json") for i in report.issues[:PREVIEW_LIMIT]]
             result = {"status": "done", "progress": 100, "report": browser_report,
-                      "severity_counts": dict(Counter(i.severity for i in report.issues)),
-                      "preview_limited": len(gdf) > PREVIEW_LIMIT or len(report.issues) > PREVIEW_LIMIT,
+                      "severity_counts": payload["severity_counts"],
+                      "preview_limited": len(frame) > PREVIEW_LIMIT or len(report.issues) > PREVIEW_LIMIT,
                       "preview_limit": PREVIEW_LIMIT,
-                      "vector_fields": fields, "vector_export_error": export_error,
-                      "repair_enabled": repair, "repair_summary": repair_summary, "repair_error": repair_error,
-                      "preset": preset, "repair_verification":repair_verification,
+                      "vector_fields": payload["vector_fields"], "vector_export_error": payload["vector_export_error"],
+                      "repair_enabled": payload["repair_enabled"], "repair_summary": payload["repair_summary"],
+                      "repair_error": payload["repair_error"],
+                      "preset": payload["preset"],
+                      "repair_verification": ({key: value for key, value in verification.items() if key != "remaining"}
+                                              if verification else verification),
                       "coverage": {"type": "FeatureCollection", "features": features}}
         except Exception as exc:
             result = {"status": "error", "error": str(exc)}

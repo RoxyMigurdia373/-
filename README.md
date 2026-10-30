@@ -1,8 +1,22 @@
 # vectopo-check
 
-Python 3.11+ 的纯本地面要素拓扑检查 CLI。支持 GeoJSON、GPKG、SHP，默认启用岛洞、触岛、多部件、小面积、重叠面 5 项常用检查；其他 10 项保留为 CLI 配置可选规则，网页不再显示。运行时不联网、不调用模型、不修改原数据。默认仅检查；显式启用修复时，另外输出修复候选、审核报告和已接受变化的副本。
+Python 3.11+ 的纯本地面要素拓扑检查工具。支持 GeoJSON、GPKG、SHP，默认启用岛洞、触岛、多部件、小面积、重叠面 5 项常用检查；其他 10 项保留为 CLI 配置可选规则，图形界面不再显示。运行时不联网、不调用模型、不修改原数据。默认仅检查；显式启用修复时，另外输出修复候选、审核报告和已接受变化的副本。
 
-## 网页操作
+图形界面默认是**原生桌面窗口**（`vectopo-gui` 或打包后的 EXE），检查在本地进程内完成，不启动浏览器；本地网页模式仍保留，用 `vectopo-check web` 或 EXE 的 `--web` 打开。
+
+## 桌面窗口（默认界面）
+
+双击 EXE 或执行 `vectopo-gui` 打开的是原生 Windows 窗口，检查、修复与导出全部在进程内完成，**不启动浏览器、不走 HTTP、不经过 base64 上传与临时拷贝**：
+
+* 选择文件（GPKG / GeoJSON / SHP / SHP 压缩包）→ 自动识别图层 → 勾选简易模式与自动修复 → “开始处理（F5）”。
+* 处理在后台线程执行，进度条和阶段提示实时刷新，窗口不会卡死或变灰；“停止”会中断当前步骤且不写出半成品成果。
+* 结果分三页：处理汇总（图斑数、各类问题计数、修复记录、处理后复核结论）、问题明细（按级别着色，最多显示 1500 行，完整清单见 report.csv）、运行日志（同一份日志写入 `%LOCALAPPDATA%\vectopo-check\launcher.log`）。
+* 成果目录默认 `<数据所在目录>\<文件名>_成果`，可自选；处理完可直接“打开成果目录”或“导出检查 SHP / 导出修复 SHP”。
+* 关闭窗口即结束进程并删除临时解压目录，需要保留的成果请先导出或复制。
+
+命令行同样可跑同一套流程：`vectopo-check check input.gpkg --simple --repair --out report`。
+
+## 网页操作（可选）
 
 ### 当前默认：免参数图斑处理
 
@@ -19,7 +33,7 @@ Python 3.11+ 的纯本地面要素拓扑检查 CLI。支持 GeoJSON、GPKG、SHP
 
 CLI 可使用同一预设：`vectopo-check check input.gpkg --simple --repair --out report`；不带 `--repair` 时仅按预设检查。
 
-双击项目中的 `启动网页版.cmd`，或在已安装环境执行：
+桌面窗口已含全部功能；只有需要浏览器预览或多机访问时才用网页模式。双击项目中的 `启动网页版.cmd`，或在已安装环境执行：
 
 ```powershell
 python -m vectopo_check.cli web
@@ -37,12 +51,12 @@ python -m vectopo_check.cli web --port 8766 --no-open
 
 ## 免安装 EXE（分享用）
 
-`dist\地类图斑拓扑检查与修复工具_v0.1.0.exe` 是打包好的单文件程序，接收方**无需安装 Python**、无需联网、无需管理员权限。双击后大约 3–6 秒解包，弹出一个小窗口并自动打开浏览器；窗口里显示服务地址，可“打开检查界面 / 复制地址 / 打开成果目录 / 退出”。
+`dist\地类图斑拓扑检查与修复工具_v0.2.0.exe` 是打包好的单文件程序，接收方**无需安装 Python**、无需联网、无需管理员权限。双击后大约 3–6 秒解包，直接弹出原生桌面窗口，选择数据即可开始检查。
 
-* 界面、检查与修复逻辑、报告导出与 `vectopo-check web` 完全一致，仍是本机 `127.0.0.1` 服务；关闭窗口会停止服务并清理临时文件，需要保留的成果请先下载。
-* 默认端口 8765，被占用时自动改用空闲端口，以窗口里显示的地址为准。
+* 界面、检查与修复逻辑、报告导出与命令行完全一致，全程离线；所有处理都在本进程内，打开窗口不再启动本地服务，也不打开浏览器。
+* 处理完成的成果写在数据旁边的 `_成果` 目录，窗口里有“打开成果目录 / 导出检查 SHP / 导出修复 SHP”。
 * 未做代码签名，SmartScreen 可能提示“Windows 已保护你的电脑”，点“更多信息 → 仍要运行”。个别杀软会把 PyInstaller 引导器误报，可对程序所在目录与 `%LOCALAPPDATA%\vectopo-check\` 加白。
-* 排错日志在 `%LOCALAPPDATA%\vectopo-check\launcher.log`。命令行参数：`--serve --no-browser --port 8765`、`--selftest 报告.json`（打包自检，覆盖 GPKG 读写、坐标转换、重叠面修复、网页资源与本地服务）。
+* 排错日志在 `%LOCALAPPDATA%\vectopo-check\launcher.log`。命令行参数：`--input 数据.gpkg`（启动后直接载入）、`--web`（改用本地网页模式，配合 `--serve --no-browser --port 8765`）、`--selftest 报告.json`（打包自检，覆盖 GPKG 读写、坐标转换、重叠面修复、桌面窗口组件、网页资源与本地服务）。
 * 自行重新打包：`.\.venv\Scripts\python.exe -m pip install -e ".[build]"`，再执行 `powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build_exe.ps1 -SelfTest`，细节见 [packaging/README.md](packaging/README.md)。
 
 ## 安装与使用

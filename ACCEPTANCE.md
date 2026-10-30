@@ -93,3 +93,15 @@
 - 分类保护：配置了 `repair.class_field` 且未开启 `merge_without_class` 时，不同分类的图斑不会自动并成一块，只产出 `pending_review` 记录，图层保持原样并在复核中继续显示该重叠对。
 - CLI + 网页端到端验证（12 图斑含重叠、包含、洞、多部件、孤立碎面、三面链）：26/26 通过；处理后图层重跑检查无 OVERLAP/SMALL_AREA/MULTIPART，面积相对去掉重叠重复计数与删除碎面后守恒，三种下载均正常。
 
+## 2026-10-31 原生桌面窗口（v0.2.0）
+
+- 用户反馈网页版“打开缓慢、页面变灰、点处理后鼠标转圈”，要求改成本地窗口处理。新增 `vectopo_check/pipeline.py` 作为桌面窗口、网页与 CLI 共用的检查+修复流水线（含取消检查），桌面端不再经 HTTP、base64 上传与临时拷贝。
+- 新增 `vectopo_check/desktop.py`：原生 Tk 窗口，选文件/图层/简易模式/自动修复/成果目录，处理跑在后台线程，进度条单调刷新，可随时“停止”且不写出半成品；结果分“处理汇总 / 问题明细 / 运行日志”三页，支持打开成果目录与导出检查/修复 SHP。窗口与字体按系统 DPI 缩放。
+- `launcher.py` 默认开桌面窗口（`--input` 直接载入数据），保留 `--web` 走本地网页模式、`--serve/--selftest` 不变；打包自检新增 “desktop window” 探针（共 9 项）。
+- `web.py` 的 `Workspace._run` 改用 `run_pipeline`，`unpack_shapefile` 迁到 `io.py`，网页与桌面共用同一实现，避免两套逻辑漂移。
+- `progress.py` 阶段表补 `OVERLAP`（80），重叠阶段进度不再回落到 2。
+- pytest：137 passed（新增 `tests/test_pipeline.py` 7 项：产物齐全、不修复时不产修复文件、取消不写报告、`exports=False`、修复失败仍保留检查报告、多图层图层选择、进度回调；`tests/test_desktop.py` 7 项：选文件后图层/成果目录、跑完汇总与明细与按钮、高级模式阈值、SHP 压缩包解包、取消后窗口状态、停止后 `start` 清除取消标记、不存在文件不抛异常）。
+- 窗口实测（打包后的 v0.2.0 EXE）：双击后直接显示桌面窗口（150% DPI 下 1000×740 逻辑尺寸），`--input` 自动载入数据，F5 跑完 9 图斑数据（6 个问题、5 笔修复、复核通过）；5,400 图斑、53 笔修复的数据用时 2.5 秒，处理期间 `IsHungAppWindow` 全程为假，窗口不再变灰或转圈，进度条与阶段文案实时刷新。
+- 修复 `_pump` 的一处顺序缺陷：完成消息之后仍排队到达的进度消息会覆盖“处理完成”文案，现以 `_finished` 标记忽略收尾后的进度更新（新增用例 `test_stale_progress_does_not_override_the_final_message`）。
+- 版本 0.2.0：`vectopo_check/__init__.py` 与 `packaging/version_info.txt` 同步，EXE 产物为 `dist\地类图斑拓扑检查与修复工具_v0.2.0.exe`（71.6 MB），打包自检 9 项全 OK。
+
