@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from .config import Config
+from .cloud_transfer import upload_request, CHUNK_SIZE
 from .export import write_shp_zip
 from .web import REPORT_FILES, Workspace
 
@@ -19,6 +20,8 @@ def dispatch(workspace, request):
     if path == "/api/config":
         config = yaml.safe_load(data.get("yaml", "")) or {} if data else {}
         return Config.model_validate(config).model_dump(mode="json")
+    if path.startswith("/api/upload/"):
+        return upload_request(workspace, path.rsplit("/", 1)[-1], data)
     if path == "/api/upload":
         files = data.get("files", [])
         if sum(len(f.get("data", "")) for f in files) > 240 * 1024 * 1024:
@@ -53,6 +56,16 @@ def dispatch(workspace, request):
             if not target.exists():
                 write_shp_zip(folder / ("repair_staging.gpkg" if processed else "checked_features.gpkg"),
                               "processed" if processed else "checked_features", target)
+    if data.get("metadata"):
+        return {"name": name, "size": target.stat().st_size, "chunk_size": CHUNK_SIZE}
+    if "offset" in data:
+        offset = data["offset"]
+        if type(offset) is not int or not 0 <= offset <= target.stat().st_size:
+            raise ValueError("下载偏移无效")
+        with target.open("rb") as stream:
+            stream.seek(offset)
+            chunk = stream.read(CHUNK_SIZE)
+        return {"name": name, "base64": base64.b64encode(chunk).decode()}
     return {"name": name, "base64": base64.b64encode(target.read_bytes()).decode()}
 
 

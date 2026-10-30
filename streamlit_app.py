@@ -1,4 +1,4 @@
-"""Cloud host for the original polygon workbench."""
+"""Cloud host for the original polygon workbench with bounded file transfers."""
 import hashlib
 from pathlib import Path
 import tempfile

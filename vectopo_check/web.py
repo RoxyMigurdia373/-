@@ -99,22 +99,26 @@ class Workspace:
                 names.add(name.lower())
                 path.write_bytes(base64.b64decode(item["data"], validate=True))
                 paths.append(path)
-            primary = [p for p in paths if p.suffix.lower() in {".gpkg", ".geojson", ".json", ".shp", ".zip"}]
-            if len(primary) != 1:
-                raise ValueError("每次请选择一个主文件；SHP 配套文件可一起选择")
-            path = primary[0]
-            display_name = path.name
-            if path.suffix.lower() == '.zip':
-                path = unpack_shapefile(path, folder)
-            elif path.suffix.lower() == ".shp" and not all(path.with_suffix(ext).name.lower() in names for ext in (".shx", ".dbf")):
-                raise ValueError("SHP 需要同名 .shx 和 .dbf 文件，建议同时提供 .prj")
-            layers = [str(row["name"]) for _, row in gpd.list_layers(path).iterrows()]
-            with self.lock:
-                self.datasets[token] = path
-            return {"dataset": token, "name": display_name, "layers": layers}
+            return self.register_upload(token, folder, paths)
         except Exception:
             shutil.rmtree(folder, ignore_errors=True)
             raise
+
+    def register_upload(self, token, folder, paths):
+        """Register already-written files after normal or chunked upload."""
+        primary = [p for p in paths if p.suffix.lower() in {".gpkg", ".geojson", ".json", ".shp", ".zip"}]
+        if len(primary) != 1:
+            raise ValueError("每次请选择一个主文件；SHP 配套文件可一起选择")
+        path = primary[0]
+        display_name = path.name
+        if path.suffix.lower() == '.zip':
+            path = unpack_shapefile(path, folder)
+        elif path.suffix.lower() == ".shp" and not all(path.with_suffix(ext).name.lower() in {p.name.lower() for p in paths} for ext in (".shx", ".dbf")):
+            raise ValueError("SHP 需要同名 .shx 和 .dbf 文件，建议同时提供 .prj")
+        layers = [str(row["name"]) for _, row in gpd.list_layers(path).iterrows()]
+        with self.lock:
+            self.datasets[token] = path
+        return {"dataset": token, "name": display_name, "layers": layers}
 
     def start(self, request):
         cfg = Config.model_validate(request.get("config", {}))
