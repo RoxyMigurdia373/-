@@ -2,8 +2,10 @@ from collections import Counter
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from shapely import STRtree
+from shapely import STRtree, make_valid
+from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import nearest_points, unary_union
 
 from ..checks.base import polygons, safe_geometry
 
@@ -57,6 +59,101 @@ class RepairContext:
                 if fid != exclude and (include_blocked or fid not in self.blocked) and fid in self.records
                 and safe_geometry(self.records[fid][0]) is not None and self.records[fid][0].is_valid
                 and self.records[fid][0].envelope.intersects(geom.envelope)]
+
+
+def shared_edge_length(geom, other, tolerance):
+    """Boundary length shared with ``other``, tolerant of hairline coordinate gaps.
+
+    Cadastral layers are often digitised twice, so two parcels that look adjacent
+    on screen can be a fraction of a millimetre apart. Exact
+    ``boundary ∩ boundary`` then reports zero, which used to make a real
+    neighbour look isolated (and the parcel eligible for deletion) or hide the
+    right merge target. Any boundary running inside ``tolerance`` of the other
+    boundary counts as shared.
+    """
+    edge = geom.boundary.intersection(other.boundary).length
+    if edge > 0 or tolerance <= 0:
+        return float(edge)
+    return float(geom.boundary.intersection(other.buffer(tolerance)).length)
+
+
+def contact_band(geom, other, tolerance):
+    """Area the two tolerance buffers share: a band for neighbours, a dot for corners."""
+    half = tolerance / 2
+    if half <= 0:
+        return float(geom.intersection(other).area)
+    return float(geom.buffer(half).intersection(other.buffer(half)).area)
+
+
+def bridge_gap(merged, tolerance):
+    """Join near-touching parts across a hairline seam into one polygon.
+
+    Two parcels digitised separately can leave a sub-millimetre gap, so their
+    union stays a MultiPolygon and a merge would be refused. Bridging the seam
+    with a corridor no wider than ``tolerance`` costs no measurable area and
+    lets the merge go through.
+    """
+    if merged is None or merged.geom_type not in {"MultiPolygon", "GeometryCollection"} or tolerance <= 0:
+        return None
+    parts = [part for part in merged.geoms if part.geom_type == "Polygon" and not part.is_empty]
+    if len(parts) < 2:
+        return None
+    changed = True
+    while len(parts) > 1 and changed:
+        changed = False
+        for i in range(len(parts)):
+            for j in range(i + 1, len(parts)):
+                first, second = parts[i], parts[j]
+                if first.distance(second) > tolerance:
+                    continue
+                a, b = nearest_points(first, second)
+                if a.distance(b) > 0:
+                    bridge = LineString([a, b]).buffer(tolerance / 2, cap_style="flat")
+                else:
+                    # A zero-width pinch: a dot of tolerance width opens the seam.
+                    bridge = a.buffer(tolerance / 2)
+                joined = unary_union([first, second, bridge])
+                if joined.geom_type == "Polygon" and joined.is_valid:
+                    parts = [part for index, part in enumerate(parts) if index not in (i, j)] + [joined]
+                    changed = True
+                    break
+            if changed:
+                break
+    return parts[0] if len(parts) == 1 else None
+
+
+def heal_self_touch(geom, cfg):
+    """Rebuild a self-touching ring into a valid single polygon.
+
+    A ring that touches itself is what a hole cut to zero width looks like:
+    ``make_valid`` turns it back into a polygon whose interior ring is a real
+    island. Only a single valid polygon counts as healed, so a bow tie (which
+    ``make_valid`` splits into two lobes) is refused. GEOS cannot be trusted with
+    the area of the invalid ring, so the caller compares the result against its
+    own protection thresholds instead of the raw shoelace value.
+    """
+    if geom is None or geom.is_empty or geom.is_valid:
+        return geom, False
+    try:
+        fixed = make_valid(geom)
+    except Exception:
+        return None, False
+    parts = [part for part in getattr(fixed, "geoms", [fixed])
+             if getattr(part, "geom_type", "") == "Polygon" and not part.is_empty]
+    if len(parts) != 1 or not parts[0].is_valid:
+        return None, False
+    return parts[0], True
+
+
+def heal_status(original, healed, cfg):
+    """Area moved by a rebuild must stay inside the touch protection band."""
+    if original is None or healed is None or cfg.is_geographic:
+        return "pending_review"
+    change = abs(original.area - healed.area)
+    ratio = change / max(abs(original.area), cfg.tolerance.distance)
+    if change > cfg.repair.touch_max_area_change or ratio > cfg.repair.touch_max_area_ratio:
+        return "pending_review"
+    return "auto_accepted"
 
 
 def geometry_diff(original, candidate):

@@ -7,7 +7,7 @@ exact-area alternative that splits the parcel instead).
 from shapely.geometry import Polygon, MultiPolygon, LineString
 from shapely.ops import nearest_points, unary_union
 from ..checks.base import safe_geometry
-from .base import reject, result
+from .base import heal_self_touch, reject, result, validate_candidate
 
 
 def repair(feature_id, geom, attrs, cfg):
@@ -17,12 +17,22 @@ def repair(feature_id, geom, attrs, cfg):
 
 
 def open_holes(feature_id, geom, attrs, cfg, width, action="cut_open_holes"):
+    original = geom
     if cfg.is_geographic:
         return reject(feature_id, geom, "切洞必须在米制投影下执行", action)
     if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
         return reject(feature_id, geom, "不支持该几何", action)
+    # A self-touching ring is a hole cut at zero width: rebuild it first, then
+    # open the recovered island with the selected strategy.
+    geom, healed = heal_self_touch(geom, cfg)
+    if geom is None:
+        return reject(feature_id, original, "自接触环无法重建为单个有效面，需人工处理", "heal_self_touch")
     parts = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
     if not any(p.interiors for p in parts):
+        if healed:
+            return validate_candidate(feature_id, original, geom, attrs, cfg, "heal_self_touch",
+                                      "pending_review" if cfg.is_geographic else "auto_accepted",
+                                      "自接触环重建为有效面，面积不变")
         return reject(feature_id, geom, "没有岛洞，无需切开")
     output = []
     for poly in parts:
@@ -59,12 +69,14 @@ def open_holes(feature_id, geom, attrs, cfg, width, action="cut_open_holes"):
     candidate = output[0] if geom.geom_type == "Polygon" else MultiPolygon(output)
     if candidate.is_empty or not candidate.is_valid:
         return reject(feature_id, geom, "切开后整体几何不合法，已回退", action)
-    loss = geom.area - candidate.area
-    protected = abs(loss) > cfg.repair.touch_max_area_change or abs(loss) / max(abs(geom.area), cfg.tolerance.distance) > cfg.repair.touch_max_area_ratio
+    loss = original.area - candidate.area
+    protected = abs(loss) > cfg.repair.touch_max_area_change or abs(loss) / max(abs(original.area), cfg.tolerance.distance) > cfg.repair.touch_max_area_ratio
     reason = ("0.1 毫米级细缝连通洞与外边界，面积损失可忽略；未填充洞内区域"
               if action == "slit_open_holes" else "窄通道连接洞与外边界；未填充洞内区域")
-    res = result(feature_id, geom, candidate, action, "pending_review" if protected else "auto_accepted",
+    if healed:
+        reason = "自接触环先重建为有效岛洞，再" + reason
+    res = result(feature_id, original, candidate, action, "pending_review" if protected else "auto_accepted",
                  "切口面积变化超过保护阈值，需复核" if protected else reason)
     res.diff.update(cut_width=width, removed_area=loss, hole_count_before=sum(len(p.interiors) for p in parts),
-                    hole_count_after=sum(len(p.interiors) for p in output))
+                    hole_count_after=sum(len(p.interiors) for p in output), healed_self_touch=healed)
     return res

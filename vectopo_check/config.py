@@ -4,7 +4,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from .models import IssueType
 
-COMMON_RULES = ["HAS_HOLE", "TOUCH_ISLAND", "MULTIPART", "SMALL_AREA", "OVERLAP"]
+COMMON_RULES = ["HAS_HOLE", "INVALID_HOLE", "TOUCH_ISLAND", "MULTIPART", "SMALL_AREA", "OVERLAP"]
 
 
 class Settings(BaseModel):

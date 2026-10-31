@@ -1,17 +1,38 @@
 from itertools import combinations
 from shapely.geometry import Polygon
-from shapely.validation import explain_validity
+from shapely.validation import explain_validity, make_valid
 from ..base import make_issue, polygons, safe_geometry
 ISSUE_TYPE = "HAS_HOLE"
 ISSUE_TYPES = ("HAS_HOLE", "INVALID_HOLE")
 MULTI_ISSUE = True
 
 
+def _self_touch_issues(feature_id, geom, cfg):
+    """An island pinched against the shell shows no interior ring at all."""
+    if cfg._active_rules is not None and "INVALID_HOLE" not in cfg._active_rules:
+        return []
+    if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
+        return []
+    if geom.is_valid:
+        return []
+    healed = make_valid(geom)
+    parts = [part for part in polygons(healed) if part.is_valid]
+    if len(parts) != 1 or not parts[0].interiors:
+        return []
+    holes = [Polygon(ring) for ring in parts[0].interiors]
+    return [make_issue(feature_id, "INVALID_HOLE",
+                       message="自接触环把岛洞压成零宽，需先重建为有效面再处理洞",
+                       geom=parts[0].representative_point(),
+                       context={"reason": "self_touch_ring", "part_index": 0,
+                                "hole_count": len(holes), "hole_areas": [hole.area for hole in holes]},
+                       suggested_fix="make_valid")]
+
+
 def check(feature_id, geom, attrs, cfg):
     result = []
     parts = [poly for poly in polygons(geom) if len(poly.interiors)]
     if not parts:
-        return result
+        return _self_touch_issues(feature_id, geom, cfg)
     if safe_geometry(geom) is None:
         return result
     for part, poly in enumerate(polygons(geom)):

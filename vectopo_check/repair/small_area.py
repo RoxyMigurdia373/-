@@ -1,4 +1,4 @@
-from .base import reject, result, validate_candidate
+from .base import bridge_gap, contact_band, reject, result, shared_edge_length, validate_candidate
 from ..checks.base import safe_geometry
 
 
@@ -13,14 +13,21 @@ def repair(feature_id, geom, attrs, cfg):
         return reject(feature_id, geom, "缺少邻接图层上下文 RepairContext", action)
     targets = []
     overlap_epsilon = min(cfg.tolerance.distance ** 2, 1e-6) if cfg.simple_mode else 0.0
+    tolerance = cfg.tolerance.distance
     has_neighbor = False
-    for fid, other, other_attrs in context.neighbors(geom, str(feature_id), include_blocked=True):
-        edge = geom.boundary.intersection(other.boundary).length
+    for fid, other, other_attrs in context.neighbors(geom.buffer(tolerance) if tolerance > 0 else geom,
+                                                     str(feature_id), include_blocked=True):
+        # Real data carries sub-millimetre gaps and coordinate noise, so an exact
+        # boundary intersection reports 0 for parcels that do share an edge.
+        exact = geom.boundary.intersection(other.boundary).length
+        edge = shared_edge_length(geom, other, tolerance)
         overlap = geom.intersection(other).area
-        has_neighbor |= edge > 0 or overlap > overlap_epsilon
+        # A shared edge is a band within tolerance; a corner touch is only a dot.
+        adjacent = contact_band(geom, other, tolerance) > tolerance ** 2
+        has_neighbor |= exact > 0 or (adjacent and edge > tolerance) or overlap > overlap_epsilon
         if fid in context.blocked or other.geom_type != "Polygon" or overlap > overlap_epsilon:
             continue
-        if edge > cfg.tolerance.distance:
+        if edge > tolerance and adjacent:
             targets.append((fid, other, other_attrs, edge))
     if not targets:
         if cfg.repair.delete_isolated_small_area and not has_neighbor:
@@ -40,6 +47,12 @@ def repair(feature_id, geom, attrs, cfg):
     fallback = None
     for target, other, other_attrs, edge in ordered:
         merged = other.union(geom)
+        if merged.geom_type == "MultiPolygon":
+            # A sub-millimetre seam between two separately digitised parcels must
+            # not block the merge: bridge it inside the tolerance band.
+            bridged = bridge_gap(merged, cfg.tolerance.distance)
+            if bridged is not None:
+                merged = bridged
         cut_loss = 0.0
         cut_status = "auto_accepted"
         if (cfg.simple_mode and cfg.repair.hole_action in {"cut_open", "slit"}

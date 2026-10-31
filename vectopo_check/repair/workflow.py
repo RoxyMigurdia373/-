@@ -56,7 +56,7 @@ def audit(gdf, cfg):
     return (counts, overlap), None
 
 
-def regression(before, after, tolerant_features=()):
+def regression(before, after, tolerant_features=(), overlap_margin=1e-6):
     counts_before, overlap_before = before
     counts_after, overlap_after = after
     new = counts_after - counts_before
@@ -66,7 +66,10 @@ def regression(before, after, tolerant_features=()):
         new = Counter({key: count for key, count in new.items()
                        if str(key[0]) not in tolerant_features and str(key[3]) not in tolerant_features})
     # A pre-existing overlap must not grow even if issue counts stay constant.
-    increased = [pair for pair, area in overlap_after.items() if area > overlap_before.get(pair, 0)]
+    # Identical stacked parcels flip in the last digits of the float area, so
+    # growth is only real when it clears a margin.
+    increased = [pair for pair, area in overlap_after.items()
+                 if area - overlap_before.get(pair, 0.0) > overlap_margin]
     return bool(new or increased), {"new_findings": [list(k) + [v] for k, v in sorted(new.items(), key=lambda item: str(item[0]))],
                                     "increased_overlaps": increased}
 
@@ -136,7 +139,8 @@ def repair_layer(gdf, cfg=None, progress=None):
             geom = working.loc[fid, geometry_name]
             if geom is None or geom.is_empty:
                 continue
-            if issue_type in {"INVALID_HOLE", "TOUCH_ISLAND"} and not any(len(p.interiors) for p in polygons(geom)):
+            if issue_type in {"INVALID_HOLE", "TOUCH_ISLAND"} and geom.is_valid \
+                    and not any(len(p.interiors) for p in polygons(geom)):
                 continue
             if issue_type == "SMALL_AREA" and geom.area >= cfg.tolerance.min_area:
                 continue
@@ -183,7 +187,9 @@ def repair_layer(gdf, cfg=None, progress=None):
                     # those two by-products are ignored for this one transaction.
                     tolerant = ({"__gap__", str(fid)}
                                 if proposal.action in {"slit_open_holes", "cut_open_holes"} else ())
-                    has_new, validation = regression(baseline, checked, tolerant_features=tolerant)
+                    has_new, validation = regression(
+                        baseline, checked, tolerant_features=tolerant,
+                        overlap_margin=max(cfg.tolerance.overlap_area * 1e-3, 1e-6))
                     if has_new:
                         proposal.status = "rejected"
                         proposal.reason = "全图层复检发现新增问题或重叠增长，已原子回退"
@@ -248,6 +254,9 @@ def repair_layer(gdf, cfg=None, progress=None):
             kinds.append("MULTIPART")
         if geom is not None and geom.area < cfg.tolerance.min_area:
             kinds.append("SMALL_AREA")
+        if geom is not None and not geom.is_valid:
+            # An invalid ring would otherwise slip through every counter.
+            kinds.append("INVALID")
         if kinds:
             remaining.append({"feature_id":fid, "source_id":part_sources.get(fid,fid), "issues":kinds,
                               "area_m2":geom.area, "reason":last.get(fid,{}).get("reason", "几何非法或关联候选待审核，无法安全自动处理")})
@@ -282,6 +291,7 @@ def repair_layer(gdf, cfg=None, progress=None):
                             "remaining_small_area":sum("SMALL_AREA" in r["issues"] for r in remaining),
                             "remaining_multipart":sum("MULTIPART" in r["issues"] for r in remaining),
                             "remaining_overlap":len(by_feature), "overlap_pairs":len(residual),
+                            "remaining_invalid":sum("INVALID" in r["issues"] for r in remaining),
                             "overlap_truncated":truncated, "remaining":remaining}}
 
 

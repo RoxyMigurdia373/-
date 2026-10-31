@@ -1,10 +1,22 @@
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
-from ..checks.base import safe_geometry
-from .base import reject, result, validate_candidate
+from ..checks.base import polygons, safe_geometry
+from .base import heal_self_touch, heal_status, reject, result, validate_candidate
 
 
 def repair(feature_id, geom, attrs, cfg):
+    # A self-touching ring hides its island at zero width; rebuild it first so
+    # every strategy below sees a real hole instead of an invalid shell.
+    healed_geom, restored = heal_self_touch(geom, cfg)
+    if healed_geom is None:
+        # Other invalidities (a hole outside its shell, for instance) belong to
+        # the rebuild paths below; only a self-touching ring is healed here.
+        healed_geom, restored = geom, False
+    if restored and not any(len(part.interiors) for part in polygons(healed_geom)):
+        return validate_candidate(feature_id, geom, healed_geom, attrs, cfg, "heal_self_touch",
+                                  heal_status(geom, healed_geom, cfg),
+                                  "自接触环重建为有效面" if heal_status(geom, healed_geom, cfg) == "auto_accepted"
+                                  else "自接触环重建后面积变化超过保护阈值，需复核")
     action = cfg.repair.hole_action
     if action == "split_open":
         # Holes were already cut open by the zero-width pre-pass; anything left
@@ -15,6 +27,7 @@ def repair(feature_id, geom, attrs, cfg):
         return cut(feature_id, geom, attrs, cfg)
     if action == "fill":
         return fill_all(feature_id, geom, attrs, cfg)
+    geom = healed_geom
     if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
         return reject(feature_id, geom, "仅支持坐标有限的 Polygon / MultiPolygon")
     parts = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
@@ -67,6 +80,10 @@ def fill_all(feature_id, geom, attrs, cfg):
         return reject(feature_id, geom, "填洞必须在米制投影下执行", "fill_holes")
     if safe_geometry(geom) is None or geom.geom_type not in {"Polygon", "MultiPolygon"}:
         return reject(feature_id, geom, "不支持该几何", "fill_holes")
+    original = geom
+    geom, healed = heal_self_touch(geom, cfg)
+    if geom is None:
+        return reject(feature_id, original, "自接触环无法重建为单个有效面，需人工处理", "heal_self_touch")
     parts = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
     if not any(p.interiors for p in parts):
         return reject(feature_id, geom, "没有岛洞，无需填充", "none")
@@ -78,7 +95,9 @@ def fill_all(feature_id, geom, attrs, cfg):
     if cfg.repair.fill_all_max_area is not None and filled_area > cfg.repair.fill_all_max_area:
         return reject(feature_id, geom,
                       f"洞面积 {filled_area:.2f} 平方米超过填平上限 {cfg.repair.fill_all_max_area:.2f}", "fill_holes")
-    res = result(feature_id, geom, candidate, "fill_holes", "auto_accepted",
-                 "按所选方式填平岛洞：无裂缝、单要素，面积增加")
-    res.diff.update(filled_area=filled_area, hole_count_before=sum(len(p.interiors) for p in parts), hole_count_after=0)
+    res = result(feature_id, original, candidate, "fill_holes", "auto_accepted",
+                 "自接触环重建后按所选方式填平岛洞：无裂缝、单要素，面积增加" if healed
+                 else "按所选方式填平岛洞：无裂缝、单要素，面积增加")
+    res.diff.update(filled_area=filled_area, hole_count_before=sum(len(p.interiors) for p in parts), hole_count_after=0,
+                    healed_self_touch=healed)
     return res

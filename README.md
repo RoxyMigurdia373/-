@@ -81,6 +81,8 @@ vectopo-check check input.gpkg --layer parcels --id-field parcel_id --config con
 
 `rules.enable` 精确控制输出类型，包括同一模块产生的多个类型。`multipart_policy`、`hole_policy` 支持 info/warn/error。可覆盖坐标范围、所有检查阈值、索引切换阈值、位置去重精度、候选对上限和每要素报告上限。
 
+默认规则为 `HAS_HOLE`、`INVALID_HOLE`、`TOUCH_ISLAND`、`MULTIPART`、`SMALL_AREA`、`OVERLAP`。`INVALID_HOLE` 自带一项“自接触环”检查：外环被洞压成零宽（GEOS 报 `Ring Self-intersection`）时，图形本身没有内环，普通洞检查看不到它，这里会用 `make_valid` 复原岛洞后按 `INVALID_HOLE` 报出，避免这类要素既不报错也永远修不掉。
+
 候选对按行号稳定排序，超过 `max_pairs` 时使用固定种子的单遍蓄水池抽样；报告记录 `sampled`、总候选数和实际检查数。流式索引查询不会一次性分配全部候选对，但计数仍需遍历全部候选。每要素截断后保留项带 `truncated=true`。问题按要素 ID、类型、位置排序，ID 由此顺序确定，不含时间戳。
 
 ## 输出
@@ -112,6 +114,12 @@ GAP 基于凸包近似，需人工复核：有意保留的洞、覆盖范围边�
 
 同类型同要素同位置（默认六位小数）按规格去重并保留最高级别，可能合并同位置不同关联要素的问题。不同类型可共存；同位置 INVALID_HOLE 优先于 TOUCH_ISLAND。拓扑错误兜底可能将无效洞同时报告为 SELF_INTERSECTION，保留 explain_validity 原文。
 
+面间判定带有 `tolerance.distance`（默认 1 毫米）量级的容差：两次数字化产生的同类边可能相差亚毫米，若按精确相交判断，看似相邻的地块会被当成孤立面。因此共边长度在精确相交为 0 时会退回“边界落在对方容差缓冲内的长度”，邻接按两侧缓冲带重叠面积判断；合并时若两片只差一条发丝缝或零宽夹点，会在容差范围内补一条不超过 1 毫米宽的连接后再生效，避免整笔回退。仅共点（角点接触）仍不算邻接。
+
+自接触环（洞与外环零宽相接）会在处理前用 `make_valid` 复原为“单部件 + 真实岛洞”；只有复原结果恰好是一个合法 Polygon 才继续，若被拆成多片（蝴蝶结）则拒绝并转人工。GEOS 对非法环给出的面积不可信，因此改用 `touch_max_area_change` / `touch_max_area_ratio` 判断复原后面积变化是否仍在保护范围内，超限只生成待复核记录。
+
+真实数据核对：石咀镇 7378 个图斑（83,662,061 m²）处理后 6994 个，非法 0、带洞 0、残留重叠 0，面积差 −0.068 m²（0.1 毫米细缝与桥接所致）；重复面、自接触岛、亚毫米缝隙碎面均按预期处理，无删除。
+
 ## 修复策略与人工复核
 
 CLI 增加可选 `--repair`；网页中展开“可选修复与人工复核”，勾选“生成修复候选”。不启用时保持原检查行为。检查报告和 `checked_features.gpkg` 始终描述原始输入；修复结果仅在独立修复文件中。
@@ -138,11 +146,11 @@ CLI 可用 `--hole-action slit|cut_open|split_open|fill|legacy` 覆盖预设，�
 
 | 问题 | 候选动作 | 自动 / 人工边界 |
 | --- | --- | --- |
-| INVALID_HOLE | 外环减去洞区域的并集，越界部分裁至外环 | 结构重建一律 pending_review；外环/洞环自身无效、重建出现意外 MultiPolygon 或仍不合法时 rejected，保留原面 |
-| HAS_HOLE | 按 `hole_action` 处理：`slit`/`cut_open` 开细缝（`slit_open_holes`/`cut_open_holes`）、`split_open` 零宽切分（`split_open_holes`）、`fill` 填平（`fill_holes`）、`legacy` 删除满足条件的洞环 | 开缝与切分只在米制投影下自动接受；开缝会给该图斑留下两条极短边并在地块间留下发丝级空隙，仅这一笔事务豁免这两类复检发现。`split_open` 要求切分后每块合法、无洞、面积之和与切前误差不超过 1e-9，否则整笔跳过。`fill` 在地理坐标系下转人工复核，可用 `fill_all_max_area` 限制单洞面积；填平覆盖其他要素时图层复检仍会回退 |
+| INVALID_HOLE | 外环减去洞区域的并集，越界部分裁至外环；自接触环先用 `make_valid` 复原成“单部件 + 真实岛洞” | 结构重建一律 pending_review；外环/洞环自身无效、重建出现意外 MultiPolygon 或仍不合法时 rejected，保留原面。自接触环复原只接受“单一合法 Polygon”，面积变化超 `touch_max_area_change`/`touch_max_area_ratio` 时转 pending_review，被拆成多片（蝴蝶结）直接 rejected |
+| HAS_HOLE | 按 `hole_action` 处理：`slit`/`cut_open` 开细缝（`slit_open_holes`/`cut_open_holes`）、`split_open` 零宽切分（`split_open_holes`）、`fill` 填平（`fill_holes`）、`legacy` 删除满足条件的洞环 | 开缝与切分只在米制投影下自动接受；开缝会给该图斑留下两条极短边并在地块间留下发丝级空隙，仅这一笔事务豁免这两类复检发现。`split_open` 要求切分后每块合法、无洞、面积之和与切前误差不超过 1e-9，否则整笔跳过。`fill` 在地理坐标系下转人工复核，可用 `fill_all_max_area` 限制单洞面积；填平覆盖其他要素时图层复检仍会回退。洞来自自接触环（外环被压成零宽）时先复原再开缝，复原面积变化超保护阈值则转 pending_review |
 | TOUCH_ISLAND | remove_touching_hole；移除与外环相交的洞，洞洞相交时选择面积较小者 | 面积绝对变化和变化比例均不超阈值才可自动接受；任一超过时强制 pending_review。洞洞等面积时按洞序号选择。仅“距离接近”不自动处理；候选仍不合法时 rejected |
-| SMALL_AREA | 将有效单部件碎面与一个共边邻面 union | STRtree 查询邻面，要求交叠面积为零、共边长度大于 distance；策略分别按最长共边或最大邻面面积选择，平局按 ID 排序。配置的分类字段非空且源/目标一致才可自动接受，否则 pending_review。目标原属性保留，源属性保留在 staging 原始行，其他属性差异需要业务确认 |
-| OVERLAP | 按面积从大到小排序，小面减去所有更大面的重叠（`clip_overlap`）；裁剪后剩余面积不足 `min_area` 或裁剪不成立时，并入重叠面积最大的图斑（`merge_overlap`） | 只在交集面积超过 `overlap_area` 时处理，共边不触发。数值误差（不超过 `distance²` 与 1e-6 中的较小值，米制简洁模式）不算实质重叠。裁剪保留面积不低于 `min_area`，合并结果必须是单部件且无内环、面积守恒误差为 0 才可自动接受；几何非法、类型变化或复检新增问题一律回退，仍无法取舍时 pending_review。面积相同时按图层顺序，先出现的图斑保有重叠区。配置了 `repair.class_field` 且未开启 `merge_without_class` 时，跨分类的合并只生成待复核记录，不自动改写图层 |
+| SMALL_AREA | 将有效单部件碎面与一个共边邻面 union | STRtree 查询邻面（按 `distance` 容差外扩，亚毫米缝隙也能找到邻面），要求交叠面积为零、共边长度大于 distance；策略分别按最长共边或最大邻面面积选择，平局按 ID 排序。配置的分类字段非空且源/目标一致才可自动接受，否则 pending_review。目标原属性保留，源属性保留在 staging 原始行，其他属性差异需要业务确认。找不到任何共边邻面（例如仅角点接触）才删除，删除记录保留原始几何与属性 |
+| OVERLAP | 按面积从大到小排序，小面减去所有更大面的重叠（`clip_overlap`）；裁剪后剩余面积不足 `min_area` 或裁剪不成立时，并入重叠面积最大的图斑（`merge_overlap`） | 只在交集面积超过 `overlap_area` 时处理，共边不触发。数值误差（不超过 `distance²` 与 1e-6 中的较小值，米制简洁模式）不算实质重叠。裁剪保留面积不低于 `min_area`，合并结果必须是单部件且无内环、面积守恒误差为 0 才可自动接受；几何非法、类型变化或复检新增问题一律回退，仍无法取舍时 pending_review。面积相同时按图层顺序，先出现的图斑保有重叠区。配置了 `repair.class_field` 且未开启 `merge_without_class` 时，跨分类的合并只生成待复核记录，不自动改写图层。完全重合的重复面按固定优先级逐个让出，重叠面积只允许不超过 `overlap_area×10⁻³` 的浮点抖动，不会因为 1e-12 级差异被误判成“重叠增长”而整笔回退 |
 
 **执行与回退**：按整个图层的 INVALID_HOLE（同模块包含 HAS_HOLE 规则填充）→ TOUCH_ISLAND → OVERLAP → SMALL_AREA 顺序执行。修复独立于 `rules.enable`，复检不受禁用规则、报告去重或每要素截断影响。已接受变化会更新工作图层和空间索引；待审核的源/目标锁定，不参加后续自动合并。
 

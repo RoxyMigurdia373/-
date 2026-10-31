@@ -115,4 +115,15 @@
 * 桌面窗口新增“岛洞处理”单选组与说明文字，`--hole-action` 同步到 CLI；`pipeline.run_pipeline(..., hole_action=None)` 在预设之后应用选择，非法值直接报“未知的岛洞处理方式”。
 * 测试：新增 `tests/test_hole_modes.py`（11 项），全量 **154 passed**。
 
+## 2026-10-31 真实数据三类缺陷（v0.3.1）
+
+用户用石咀镇数据（7 378 个图斑，EPSG:4326）反馈三件事：自接触岛没解决、重叠面没完全解决、`BH=1` 且小于 0.1 亩但有共边的图斑被删。逐条定位后修复：
+
+* 自接触岛：唯一非法要素（620.49 m²）是洞与外环零宽相接，图形本身没有内环，`HAS_HOLE` 看不到它，`workflow` 的 `INVALID_HOLE` 阶段又因“没有 interiors”直接跳过，于是既不报也永不修。现在 `checks/single/holes.py` 增加自接触环检查（`make_valid` 复原后确有岛洞即报 `INVALID_HOLE`，`suggested_fix=make_valid`），`INVALID_HOLE` 纳入默认规则；修复侧先 `heal_self_touch` 复原为“单部件 + 真实岛洞”再按所选方式处理（本例为 0.1 毫米细缝），复原面积变化超 `touch_max_area_change`/`touch_max_area_ratio` 只转待复核。
+* 重叠残留：两组三个完全重合的重复面被图层复检判成“重叠增长”而整笔回退——`regression` 用 `after > before` 比较重叠面积，`851.9875386901153` 与 `851.9875386901156` 的浮点抖动即触发。现在增长判定带容差 `overlap_margin = max(overlap_area×10⁻³, 1e-6)`，重复面可正常逐笔让出，残余重叠对 6 → 0。
+* 误删碎面：`small_area` 用精确 `boundary ∩ boundary` 判断邻接，真实数据两次数字化留下亚微米缝隙即被当成“无共边邻面”删除（135 笔）。现在邻面查询按 `distance` 容差外扩，共边长度在精确相交为 0 时退回“边界落在对方容差缓冲内的长度”，邻接按缓冲带重叠面积判定；两片只差发丝缝或零宽夹点时用 `bridge_gap` 在容差内补一条 ≤1 毫米宽的连接再生效。`BH=1` 的 7.78 m² 图斑由删除改为并入 51 260 m² 的邻面，全图层删除数 135 → 0。
+* 结果（同一数据、默认简易模式）：检查 `{'HAS_HOLE': 72, 'INVALID_HOLE': 1, 'OVERLAP': 31, 'SMALL_AREA': 360}`，修复 27 秒；成果 6 994 个图斑，非法 0、带洞 0、残留重叠 0 对、`remaining_invalid` 0；`union` 面积 83 662 061.452 m² → 成果合计 83 662 061.384 m²（差 −0.068 m²，来自 0.1 毫米细缝与桥接）。剩余 6 个小于 0.1 亩的图斑全部有记录：4 个合并后成洞且切口会断开成多部件、2 个只有角点接触，均保留原样并在复核里给出原因，不再静默删除。
+* 测试：新增 `tests/test_real_world_defects.py`（6 项，含真实自接触环 WKT 回归、重复面、0.3 毫米缝隙合并、角点仍不合并、`bridge_gap`、浮点抖动不算增长）；`tests/test_fast_defaults.py` 的默认规则用例加入自接触环夹具并显式关闭 `INVALID_HOLE` 验证“关闭时不执行”。全量 **161 passed**。
+
+
 
